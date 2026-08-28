@@ -3,8 +3,9 @@ import { define as definePlugin } from "@opencode-ai/plugin/effect/plugin"
 import { ServerFetch } from "@opencode-ai/server/fetch"
 import { ServerWorkerd } from "@opencode-ai/server/workerd"
 import { DurableObject } from "cloudflare:workers"
-import { Effect, Exit, Layer, RcRef, Scope } from "effect"
+import { Effect, Exit, Layer, RcRef, Scope, type Context } from "effect"
 import { deviceMcpServers } from "./device-mcps"
+import { finalizeWithResponse } from "./response-lifecycle"
 
 interface Env {
   OPENCODE: DurableObjectNamespace<OpenCodeDO>
@@ -16,16 +17,26 @@ interface Env {
 
 type OpenCodeHandler = (
   request: Request,
-  context?: import("effect").Context.Context<never>,
+  context?: Context.Context<never>,
 ) => Promise<Response>
 
-const removedBuiltinTools = ["read", "write", "edit", "patch", "glob", "grep", "shell"]
+type HandlerRef = RcRef.RcRef<OpenCodeHandler, Error>
+
+const disabledBuiltinTools = [
+  "read",
+  "write",
+  "edit",
+  "patch",
+  "glob",
+  "grep",
+  "shell",
+]
 
 const deviceToolsOnly = definePlugin({
   id: "device-tools-only",
   effect: (context) =>
     context.tool.transform((tools) => {
-      for (const id of removedBuiltinTools) tools.remove(id)
+      for (const id of disabledBuiltinTools) tools.remove(id)
     }),
 })
 
@@ -43,96 +54,64 @@ const sdkPluginsLayer = Layer.succeed(
   }),
 )
 
+const serverConfig = (env: Env): string => {
+  const servers = deviceMcpServers(env)
+  return JSON.stringify(Object.keys(servers).length === 0 ? {} : { mcp: { servers } })
+}
+
+const makeHandler = (state: DurableObjectState, env: Env) => {
+  const workerdOptions = {
+    storage: state.storage,
+    password: env.OPENCODE_PASSWORD,
+    models: { fetch: false },
+    config: { content: serverConfig(env) },
+  }
+
+  return ServerFetch.make(ServerWorkerd.serverOptions(workerdOptions), {
+    overrides: [
+      ...ServerWorkerd.replacements(workerdOptions),
+      [SdkPlugins.node, sdkPluginsLayer],
+    ],
+  })
+}
+
+const makeHandlerRef = (
+  state: DurableObjectState,
+  env: Env,
+): Promise<HandlerRef> =>
+  Effect.gen(function*() {
+    // The owner scope keeps the RcRef usable for the lifetime of this object.
+    // Request scopes control the lifetime of the server it contains.
+    const ownerScope = yield* Scope.make()
+    return yield* RcRef.make({ acquire: makeHandler(state, env) }).pipe(
+      Effect.provideService(Scope.Scope, ownerScope),
+    )
+  }).pipe(Effect.runPromise)
+
+const closeScope = (scope: Scope.Closeable): Promise<void> =>
+  Effect.runPromise(Scope.close(scope, Exit.void))
+
 export class OpenCodeDO extends DurableObject<Env> {
-  private readonly handler: Promise<RcRef.RcRef<OpenCodeHandler, Error>>
+  private readonly handlerRef: Promise<HandlerRef>
 
   constructor(state: DurableObjectState, env: Env) {
     super(state, env)
-    this.handler = state.blockConcurrencyWhile(async () => {
-      const deviceServers = deviceMcpServers(env)
-      // The owner scope contains only the RcRef while the object is idle. Each
-      // response gets its own borrower scope below.
-      const owner = await Effect.runPromise(Scope.make())
-      return Effect.runPromise(
-        RcRef.make({
-          acquire: ServerFetch.make(ServerWorkerd.serverOptions({
-            storage: state.storage,
-            password: env.OPENCODE_PASSWORD,
-            models: { fetch: false },
-            config: {
-              content: JSON.stringify({
-                ...(Object.keys(deviceServers).length
-                  ? {
-                      mcp: {
-                        servers: deviceServers,
-                      },
-                    }
-                  : {}),
-              }),
-            },
-          }), {
-            overrides: [
-              ...ServerWorkerd.replacements({ storage: state.storage }),
-              [SdkPlugins.node, sdkPluginsLayer],
-            ],
-          }),
-        }).pipe(Effect.provideService(Scope.Scope, owner)),
-      )
-    })
+    this.handlerRef = state.blockConcurrencyWhile(() => makeHandlerRef(state, env))
   }
 
   async fetch(request: Request): Promise<Response> {
     const scope = await Effect.runPromise(Scope.make())
-    const close = () => Effect.runPromise(Scope.close(scope, Exit.void))
+    let closing: Promise<void> | undefined
+    const close = () => (closing ??= closeScope(scope))
 
     try {
       const handler = await Effect.runPromise(
-        RcRef.get(await this.handler).pipe(Effect.provideService(Scope.Scope, scope)),
+        RcRef.get(await this.handlerRef).pipe(
+          Effect.provideService(Scope.Scope, scope),
+        ),
       )
       const response = await handler(request)
-
-      if (!response.body) {
-        await close()
-        return response
-      }
-
-      const reader = response.body.getReader()
-      let released = false
-      const release = async () => {
-        if (released) return
-        released = true
-        await close()
-      }
-
-      const body = new ReadableStream<Uint8Array>({
-        async pull(controller) {
-          try {
-            const result = await reader.read()
-            if (result.done) {
-              controller.close()
-              await release()
-              return
-            }
-            controller.enqueue(result.value)
-          } catch (error) {
-            controller.error(error)
-            await release()
-          }
-        },
-        async cancel(reason) {
-          try {
-            await reader.cancel(reason)
-          } finally {
-            await release()
-          }
-        },
-      })
-
-      return new Response(body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: response.headers,
-      })
+      return await finalizeWithResponse(response, close)
     } catch (error) {
       await close()
       throw error
