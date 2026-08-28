@@ -1,10 +1,15 @@
+import { SdkPlugins } from "@opencode-ai/core/plugin/sdk"
+import { define as definePlugin } from "@opencode-ai/plugin/effect/plugin"
+import { ServerFetch } from "@opencode-ai/server/fetch"
 import { ServerWorkerd } from "@opencode-ai/server/workerd"
 import { DurableObject } from "cloudflare:workers"
-import { Effect, Exit, RcRef, Scope } from "effect"
+import { Effect, Exit, Layer, RcRef, Scope } from "effect"
+import { deviceMcpServers } from "./device-mcps"
 
 interface Env {
   OPENCODE: DurableObjectNamespace<OpenCodeDO>
   OPENCODE_PASSWORD?: string
+  DEVICE_MCP_SERVERS?: string
   DEVICE_MCP_URL?: string
   DEVICE_MCP_TOKEN?: string
 }
@@ -14,52 +19,62 @@ type OpenCodeHandler = (
   context?: import("effect").Context.Context<never>,
 ) => Promise<Response>
 
+const removedBuiltinTools = ["read", "write", "edit", "patch", "glob", "grep", "shell"]
+
+const deviceToolsOnly = definePlugin({
+  id: "device-tools-only",
+  effect: (context) =>
+    context.tool.transform((tools) => {
+      for (const id of removedBuiltinTools) tools.remove(id)
+    }),
+})
+
+const sdkPluginsLayer = Layer.succeed(
+  SdkPlugins.Service,
+  SdkPlugins.Service.of({
+    register: () => Effect.void,
+    all: () => [
+      {
+        ...deviceToolsOnly,
+        version: "1",
+        source: { type: "sdk" as const },
+      },
+    ],
+  }),
+)
+
 export class OpenCodeDO extends DurableObject<Env> {
   private readonly handler: Promise<RcRef.RcRef<OpenCodeHandler, Error>>
 
   constructor(state: DurableObjectState, env: Env) {
     super(state, env)
     this.handler = state.blockConcurrencyWhile(async () => {
+      const deviceServers = deviceMcpServers(env)
       // The owner scope contains only the RcRef while the object is idle. Each
       // response gets its own borrower scope below.
       const owner = await Effect.runPromise(Scope.make())
       return Effect.runPromise(
         RcRef.make({
-          acquire: ServerWorkerd.create({
+          acquire: ServerFetch.make(ServerWorkerd.serverOptions({
             storage: state.storage,
             password: env.OPENCODE_PASSWORD,
             models: { fetch: false },
             config: {
               content: JSON.stringify({
-                permissions: [
-                  { action: "read", resource: "*", effect: "deny" },
-                  { action: "glob", resource: "*", effect: "deny" },
-                  { action: "grep", resource: "*", effect: "deny" },
-                  { action: "edit", resource: "*", effect: "deny" },
-                  { action: "shell", resource: "*", effect: "deny" },
-                ],
-                ...(env.DEVICE_MCP_URL && env.DEVICE_MCP_TOKEN
+                ...(Object.keys(deviceServers).length
                   ? {
                       mcp: {
-                        servers: {
-                          device: {
-                            type: "remote",
-                            url: env.DEVICE_MCP_URL,
-                            headers: { Authorization: `Bearer ${env.DEVICE_MCP_TOKEN}` },
-                            oauth: false,
-                            codemode: false,
-                            timeout: {
-                              startup: 15_000,
-                              catalog: 15_000,
-                              execution: 1_800_000,
-                            },
-                          },
-                        },
+                        servers: deviceServers,
                       },
                     }
                   : {}),
               }),
             },
+          }), {
+            overrides: [
+              ...ServerWorkerd.replacements({ storage: state.storage }),
+              [SdkPlugins.node, sdkPluginsLayer],
+            ],
           }),
         }).pipe(Effect.provideService(Scope.Scope, owner)),
       )

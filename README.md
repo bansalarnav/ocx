@@ -70,6 +70,35 @@ bun run deploy
 
 The model receives the replacements as `device_read`, `device_glob`, `device_grep`, `device_write`, `device_edit`, `device_patch`, and `device_shell`.
 
+### Multiple devices
+
+Set the `DEVICE_MCP_SERVERS` secret to a JSON object keyed by device name. Names may contain lowercase letters, numbers, and underscores. Each name becomes the prefix for that device's tools.
+
+```sh
+bunx wrangler secret put DEVICE_MCP_SERVERS
+```
+
+Paste a registry like this when Wrangler prompts for the secret:
+
+```json
+{
+  "laptop": {
+    "url": "https://my-laptop.tnl.arnav.fish/mcp",
+    "token": "token-used-by-the-laptop-device-server"
+  },
+  "desktop": {
+    "url": "https://my-desktop.tnl.arnav.fish/mcp",
+    "token": "token-used-by-the-desktop-device-server"
+  }
+}
+```
+
+Run the device server and a uniquely named tunnel on each machine. For example, set `OPENCODE_DEVICE_TUNNEL_NAME=my-laptop` on the laptop and `OPENCODE_DEVICE_TUNNEL_NAME=my-desktop` on the desktop before running `bun run device:tunnel`.
+
+The model then receives `laptop_read`, `laptop_shell`, `desktop_read`, `desktop_shell`, and the rest of each device's catalog. The device server includes its workspace root in its MCP instructions, which helps the model choose the right machine. Updating the registry secret creates a new Worker version, so the next Durable Object activation uses the new device list.
+
+The old `DEVICE_MCP_URL` and `DEVICE_MCP_TOKEN` secrets remain supported as a device named `device`. Named registry entries are added alongside it. A `device` entry in `DEVICE_MCP_SERVERS` replaces the legacy slot.
+
 ### Public previews
 
 The device server also exposes `device_preview_start`, `device_preview_list`, and `device_preview_stop`. The agent can launch a local web server, wait for its port, expose it through `tnlc`, and return the public HTTPS URL. For example, it can call `device_preview_start` with a command such as `bun run dev -- --host 127.0.0.1 --port 3000` and port `3000`.

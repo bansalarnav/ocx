@@ -7,10 +7,13 @@
     "deploy": "wrangler deploy",
     "device": "bun device/server.ts",
     "device:tunnel": "bash device/tunnel.sh",
+    "test": "bun test",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.device.json"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
+    "@opencode-ai/core": "0.0.0-beta-18371",
+    "@opencode-ai/plugin": "0.0.0-beta-18371",
     "@opencode-ai/server": "0.0.0-beta-18371",
     "@opencode-ai/util": "0.0.0-beta-18371",
     "effect": "4.0.0-rc.111",
