@@ -1,0 +1,27 @@
+{
+  "name": "opencode-durable-object",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "device": "bun device/server.ts",
+    "device:tunnel": "bash device/tunnel.sh",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.device.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "@opencode-ai/server": "0.0.0-beta-18371",
+    "@opencode-ai/util": "0.0.0-beta-18371",
+    "effect": "4.0.0-rc.111",
+    "express": "5.2.1",
+    "zod": "4.1.8"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "latest",
+    "@types/express": "5.0.6",
+    "@types/node": "24.12.2",
+    "typescript": "latest",
+    "wrangler": "latest"
+  }
+}
