@@ -70,6 +70,14 @@ bun run deploy
 
 The model receives the replacements as `device_read`, `device_glob`, `device_grep`, `device_write`, `device_edit`, `device_patch`, and `device_shell`.
 
+### Public previews
+
+The device server also exposes `device_preview_start`, `device_preview_list`, and `device_preview_stop`. The agent can launch a local web server, wait for its port, expose it through `tnlc`, and return the public HTTPS URL. For example, it can call `device_preview_start` with a command such as `bun run dev -- --host 127.0.0.1 --port 3000` and port `3000`.
+
+If a web server is already running, the agent can omit `command` and provide only its port. `device_preview_stop` closes the tunnel and also stops the command launched by `device_preview_start`. The default URL is `https://opencode-preview.tnl.arnav.fish`; its certificate is cached, so later previews do not wait for new certificate issuance. Only one preview can use that hostname at a time. The agent can provide another name when it needs a second concurrent preview.
+
+Preview URLs are public and do not use the MCP bearer token. Do not preview applications containing secrets, administrative routes, or trusted development-only APIs.
+
 File operations reject paths and symlinks that leave `OPENCODE_DEVICE_ROOT`. The shell starts in that root but is intentionally not sandboxed; a shell command can still access anything allowed to the local operating-system user. Run this under a restricted user if that is not acceptable.
 
 ## Runtime limits

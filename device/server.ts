@@ -9,6 +9,7 @@ import { Patch } from "@opencode-ai/util/patch"
 import express, { type Request, type Response } from "express"
 import { Result } from "effect"
 import { z } from "zod/v4"
+import { PreviewManager } from "./preview.js"
 
 const root = await fs.realpath(path.resolve(process.env.OPENCODE_DEVICE_ROOT ?? process.cwd()))
 const host = process.env.OPENCODE_DEVICE_HOST ?? "127.0.0.1"
@@ -19,6 +20,7 @@ if (!configuredToken) {
   throw new Error("OPENCODE_DEVICE_TOKEN is required")
 }
 const token = configuredToken
+const previews = new PreviewManager()
 
 if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
   throw new Error(`Invalid OPENCODE_DEVICE_PORT: ${process.env.OPENCODE_DEVICE_PORT}`)
@@ -351,6 +353,59 @@ function createMcpServer(): McpServer {
     },
   )
 
+  server.registerTool(
+    "preview_start",
+    {
+      description: "Start or attach to a local web server and expose it at a PUBLIC HTTPS preview URL through tnl. The URL has no preview-level authentication; never expose secrets or privileged development endpoints.",
+      inputSchema: {
+        port: z.number().int().min(1).max(65_535).describe("Local TCP port the web server listens on"),
+        command: z.string().min(1).optional().describe("Optional shell command to start the web server. Omit it to expose a server already listening on the port"),
+        workdir: z.string().optional().describe("Working directory inside the workspace, default workspace root"),
+        name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/).optional().describe("Optional tnl subdomain name. Defaults to the reusable opencode-preview hostname"),
+        startupTimeout: z.number().int().min(1_000).max(120_000).optional().describe("Milliseconds to wait for the port and tunnel, default 30000"),
+      },
+      annotations: { destructiveHint: true, openWorldHint: true },
+    },
+    async ({ port, command, workdir = ".", name, startupTimeout = 30_000 }) => {
+      const cwd = await assertExistingPath(workdir)
+      const preview = await previews.start({ port, command, workdir: cwd, name, startupTimeout })
+      return textResult([
+        `Preview: ${preview.url}`,
+        `ID: ${preview.id}`,
+        `Local port: ${preview.port}`,
+        "Warning: this URL is public and has no preview-level authentication.",
+      ].join("\n"))
+    },
+  )
+
+  server.registerTool(
+    "preview_list",
+    {
+      description: "List web previews started by this device MCP process.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    async () => {
+      const active = previews.list()
+      return textResult(active.length ? JSON.stringify(active, null, 2) : "No previews are active.")
+    },
+  )
+
+  server.registerTool(
+    "preview_stop",
+    {
+      description: "Stop a public preview tunnel and the web server command that preview_start launched for it.",
+      inputSchema: {
+        id: z.string().min(1).describe("Preview ID returned by preview_start or preview_list"),
+      },
+      annotations: { destructiveHint: true, openWorldHint: true },
+    },
+    async ({ id }) => {
+      const preview = previews.stop(id)
+      return textResult(`Stopped preview ${id} (${preview.url}).`)
+    },
+  )
+
   return server
 }
 
@@ -416,5 +471,8 @@ http.listen(port, host, () => {
 })
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  process.once(signal, () => http.close(() => process.exit(0)))
+  process.once(signal, () => {
+    previews.stopAll()
+    http.close(() => process.exit(0))
+  })
 }
