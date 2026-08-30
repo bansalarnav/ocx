@@ -83,13 +83,3 @@ The runtime bundler resolves npm registry versions, ranges, and tags. It rejects
 
 Use web search and web fetch when you need current OpenCode or package documentation. Inspect package APIs instead of guessing. Finish only after writing the project files. The manager will run structural checks, resolve packages, bundle both entrypoints, inspect the server bundle, store the source, hot-activate server tools, and reload the tool catalog. If a check fails, fix the workspace using the diagnostic you receive.
 `
-
-export const searchPluginDocs = (query: string): string => {
-  const terms = query.toLowerCase().split(/\s+/).filter(Boolean)
-  const paragraphs = pluginDocs.split(/\n\n+/)
-  const matches = paragraphs.filter((paragraph) => {
-    const value = paragraph.toLowerCase()
-    return terms.every((term) => value.includes(term))
-  })
-  return (matches.length === 0 ? paragraphs.slice(0, 5) : matches).join("\n\n")
-}

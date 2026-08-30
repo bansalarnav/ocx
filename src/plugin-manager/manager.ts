@@ -86,7 +86,7 @@ const validateID = (id: unknown): string => {
   return id
 }
 
-export const inspectPluginWorkspace = (workspace: PluginWorkspace) => {
+const inspectPluginWorkspace = (workspace: PluginWorkspace) => {
   const files = workspace.files
   const serverEntry = files["server.ts"] !== undefined ? "server.ts"
     : files["server.js"] !== undefined ? "server.js"
