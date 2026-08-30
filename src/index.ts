@@ -5,6 +5,10 @@ import { ServerWorkerd } from "@opencode-ai/server/workerd"
 import { DurableObject } from "cloudflare:workers"
 import { Effect, Exit, Layer, RcRef, Scope, type Context } from "effect"
 import { deviceMcpServers } from "./device-mcps"
+import { makePluginManager } from "./plugin-manager/manager"
+import { makeQuickJSPlugin } from "./plugin-manager/quickjs"
+import { makeLivePluginRegistry } from "./plugin-manager/registry"
+import { makePluginStore } from "./plugin-manager/store"
 import { finalizeWithResponse } from "./response-lifecycle"
 
 interface Env {
@@ -40,26 +44,16 @@ const deviceToolsOnly = definePlugin({
     }),
 })
 
-const sdkPluginsLayer = Layer.succeed(
-  SdkPlugins.Service,
-  SdkPlugins.Service.of({
-    register: () => Effect.void,
-    all: () => [
-      {
-        ...deviceToolsOnly,
-        version: "1",
-        source: { type: "sdk" as const },
-      },
-    ],
-  }),
-)
-
 const serverConfig = (env: Env): string => {
   const servers = deviceMcpServers(env)
   return JSON.stringify(Object.keys(servers).length === 0 ? {} : { mcp: { servers } })
 }
 
-const makeHandler = (state: DurableObjectState, env: Env) => {
+const makeHandler = (
+  state: DurableObjectState,
+  env: Env,
+  sdkPluginsLayer: Layer.Layer<SdkPlugins.Service, never, import("@opencode-ai/core/bus").Bus.Service>,
+) => {
   const workerdOptions = {
     storage: state.storage,
     password: env.OPENCODE_PASSWORD,
@@ -78,15 +72,32 @@ const makeHandler = (state: DurableObjectState, env: Env) => {
 const makeHandlerRef = (
   state: DurableObjectState,
   env: Env,
-): Promise<HandlerRef> =>
-  Effect.gen(function*() {
+): Promise<HandlerRef> => {
+  const acquire = async () => {
+    const store = makePluginStore(state.storage)
+    const registry = makeLivePluginRegistry([deviceToolsOnly])
+    await registry.upsert(makePluginManager(store, registry))
+    for (const plugin of await store.list()) {
+      if (plugin.enabled && (
+        plugin.serverBundle !== undefined ||
+        plugin.files["server.ts"] !== undefined ||
+        plugin.files["server.js"] !== undefined
+      )) {
+        await registry.upsert(makeQuickJSPlugin(plugin))
+      }
+    }
+
+    return Effect.gen(function*() {
     // The owner scope keeps the RcRef usable for the lifetime of this object.
     // Request scopes control the lifetime of the server it contains.
     const ownerScope = yield* Scope.make()
-    return yield* RcRef.make({ acquire: makeHandler(state, env) }).pipe(
+    return yield* RcRef.make({ acquire: makeHandler(state, env, registry.layer) }).pipe(
       Effect.provideService(Scope.Scope, ownerScope),
     )
-  }).pipe(Effect.runPromise)
+    }).pipe(Effect.runPromise)
+  }
+  return acquire()
+}
 
 const closeScope = (scope: Scope.Closeable): Promise<void> =>
   Effect.runPromise(Scope.close(scope, Exit.void))
