@@ -11,6 +11,8 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.device.json"
   },
   "dependencies": {
+    "@cloudflare/worker-bundler": "^0.2.3",
+    "@jitl/quickjs-wasmfile-release-sync": "0.32.0",
     "@modelcontextprotocol/sdk": "1.29.0",
     "@opencode-ai/core": "0.0.0-beta-18371",
     "@opencode-ai/plugin": "0.0.0-beta-18371",
@@ -18,6 +20,7 @@
     "@opencode-ai/util": "0.0.0-beta-18371",
     "effect": "4.0.0-rc.111",
     "express": "5.2.1",
+    "quickjs-emscripten-core": "0.32.0",
     "zod": "4.1.8"
   },
   "devDependencies": {

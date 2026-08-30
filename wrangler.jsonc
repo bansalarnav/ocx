@@ -5,6 +5,13 @@
   "minify": true,
   "compatibility_date": "2026-08-26",
   "compatibility_flags": ["nodejs_compat"],
+  "rules": [
+    {
+      "type": "CompiledWasm",
+      "globs": ["**/*.wasm"],
+      "fallthrough": true
+    }
+  ],
   "durable_objects": {
     "bindings": [
       {
