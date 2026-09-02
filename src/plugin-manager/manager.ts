@@ -144,7 +144,7 @@ const pluginView = (plugin: StoredPlugin, serverActive: boolean) => ({
   dependencies: plugin.dependencies ?? {},
   updatedAt: plugin.updatedAt,
   serverActive,
-  tuiStatus: plugin.tuiBundle === undefined ? "absent" : "pending-client-sync",
+  tuiStatus: plugin.tuiBundle === undefined ? "absent" : "available-to-clients",
   bundleWarnings: plugin.bundleWarnings ?? [],
 })
 

@@ -63,7 +63,7 @@ export default Plugin.define({
 })
 \`\`\`
 
-The local TUI API includes \`ctx.ui\`, \`ctx.keymap\`, \`ctx.renderer\`, \`ctx.data\`, \`ctx.client\`, \`ctx.storage\`, themes, attention notifications, and Markdown renderers. The server bundles and stores \`tui.tsx\`, but no client loads it yet. It will be reported as \`pending-client-sync\` and has no visible effect.
+The local TUI API includes \`ctx.ui\`, \`ctx.keymap\`, \`ctx.renderer\`, \`ctx.data\`, \`ctx.client\`, \`ctx.storage\`, themes, attention notifications, and Markdown renderers. The server bundles and stores \`tui.tsx\`. Connected \`ocx\` clients ask for local approval, verify the artifact, and load it. Later edits hot-reload on every connected and approving client. Return cleanup functions from registrations so the previous version can be removed cleanly.
 
 ## Dependencies
 

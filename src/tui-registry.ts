@@ -23,6 +23,82 @@ export interface TuiPluginManifest {
   plugins: TuiPluginManifestEntry[]
 }
 
+export interface TuiRegistryEvents {
+  publish(): void
+  response(request: Request): Response
+}
+
+export const makeTuiRegistryEvents = (): TuiRegistryEvents => {
+  const encoder = new TextEncoder()
+  const clients = new Set<ReadableStreamDefaultController<Uint8Array>>()
+  let generation = 0
+
+  return {
+    publish() {
+      generation++
+      const message = encoder.encode(`event: changed\ndata: ${generation}\n\n`)
+      for (const client of clients) {
+        try {
+          client.enqueue(message)
+        } catch {
+          clients.delete(client)
+        }
+      }
+    },
+    response(request) {
+      let controller: ReadableStreamDefaultController<Uint8Array> | undefined
+      let keepalive: ReturnType<typeof setInterval> | undefined
+      let closed = false
+      const close = () => {
+        if (closed) return
+        closed = true
+        if (keepalive !== undefined) clearInterval(keepalive)
+        if (controller !== undefined) clients.delete(controller)
+      }
+      const stream = new ReadableStream<Uint8Array>({
+        start(next) {
+          controller = next
+          clients.add(next)
+          next.enqueue(encoder.encode(`event: ready\ndata: ${generation}\n\n`))
+          keepalive = setInterval(() => {
+            try {
+              next.enqueue(encoder.encode(": keepalive\n\n"))
+            } catch {
+              close()
+            }
+          }, 20_000)
+          request.signal.addEventListener("abort", close, { once: true })
+        },
+        cancel: close,
+      })
+      return new Response(stream, {
+        headers: {
+          "content-type": "text/event-stream; charset=utf-8",
+          "cache-control": "no-store",
+          connection: "keep-alive",
+          "x-accel-buffering": "no",
+        },
+      })
+    },
+  }
+}
+
+export const withTuiRegistryEvents = (
+  store: PluginStore,
+  events: TuiRegistryEvents,
+): PluginStore => ({
+  list: () => store.list(),
+  get: (id) => store.get(id),
+  async put(plugin) {
+    await store.put(plugin)
+    events.publish()
+  },
+  async remove(id) {
+    await store.remove(id)
+    events.publish()
+  },
+})
+
 const minimumOpenCodeVersion = "0.0.0-beta-18371"
 
 const sha256 = async (content: string): Promise<string> => {
@@ -97,11 +173,14 @@ const routeParts = (url: URL): string[] | undefined => {
 export const makeTuiRegistryHandler = (
   store: PluginStore,
   password?: string,
+  events = makeTuiRegistryEvents(),
 ) => async (request: Request): Promise<Response | undefined> => {
   const parts = routeParts(new URL(request.url))
   if (parts === undefined) return undefined
   if (request.method !== "GET") return json({ error: "Method not allowed" }, 405, { allow: "GET" })
   if (!authenticated(request, password)) return unauthorized()
+
+  if (parts.length === 1 && parts[0] === "events") return events.response(request)
 
   if (parts.length === 0) {
     const plugins = (await store.list())

@@ -10,14 +10,17 @@ import {
   readFile,
   rename,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { createInterface } from "node:readline/promises"
 import { pathToFileURL } from "node:url"
+import { setTimeout as wait } from "node:timers/promises"
 import { parse as parseJsonc, type ParseError, printParseErrorCode } from "jsonc-parser"
 import type { TuiPluginManifest, TuiPluginManifestEntry } from "../src/tui-registry"
+import { ocxLoaderSource } from "./ocx-loader-source"
 
 interface Approval {
   version: string
@@ -36,6 +39,20 @@ interface Options {
   dataRoot: string
   yes: boolean
   childArgs: string[]
+}
+
+interface ActivePlugin {
+  id: string
+  sha256: string
+  path: string
+}
+
+interface SyncResult {
+  configDir: string
+  tuiConfig: string
+  controlDir: string
+  installed: string[]
+  serverDir: string
 }
 
 const usage = `Usage: ocx [options] <server-url> [-- opencode2 arguments]
@@ -231,44 +248,61 @@ const mergedTuiConfig = (
   }
 }
 
-export const syncPlugins = async (options: Options, env = process.env): Promise<{
-  configDir: string
-  tuiConfig: string
-  installed: string[]
-}> => {
+const pathsFor = (options: Options) => {
   const serverID = sha256(options.origin).slice(0, 32)
   const serverDir = join(options.dataRoot, "servers", serverID)
-  const approvalPath = join(serverDir, "approvals.json")
-  const trustPath = join(serverDir, "trust.json")
-  const approvals = await readJson<ApprovalFile>(approvalPath, { schemaVersion: 1, plugins: {} })
-  if (approvals.schemaVersion !== 1 || !approvals.plugins || typeof approvals.plugins !== "object") {
-    fail(`Invalid approval file: ${approvalPath}`)
+  return {
+    serverDir,
+    approvalPath: join(serverDir, "approvals.json"),
+    trustPath: join(serverDir, "trust.json"),
+    manifestURL: `${options.origin}/api/generated-plugins/tui`,
   }
-  const trust = await readJson<{ schemaVersion: 1; origin: string } | undefined>(trustPath, undefined)
-  if (trust && (trust.schemaVersion !== 1 || trust.origin !== options.origin)) {
-    fail(`Server identity mismatch in ${trustPath}`)
-  }
+}
 
-  const manifestURL = `${options.origin}/api/generated-plugins/tui`
-  const manifest = validateManifest(await (await fetchChecked(manifestURL, env.OPENCODE_PASSWORD)).json())
-  const installed: string[] = []
+const fetchManifest = async (url: string, password?: string): Promise<TuiPluginManifest> =>
+  validateManifest(await (await fetchChecked(url, password)).json())
 
+const artifactPathFor = (
+  serverDir: string,
+  id: string,
+  hash: string,
+): string => join(serverDir, "plugins", id, hash, "tui.tsx")
+
+const installManifest = async (
+  manifest: TuiPluginManifest,
+  approvals: ApprovalFile,
+  serverDir: string,
+  manifestURL: string,
+  password: string | undefined,
+  approveChange: (plugin: TuiPluginManifestEntry, changed: boolean) => Promise<boolean>,
+): Promise<ActivePlugin[]> => {
+  const installed: ActivePlugin[] = []
   for (const plugin of manifest.plugins) {
-    const artifactPath = join(serverDir, "plugins", plugin.id, plugin.sha256, plugin.entrypoint)
     const previous = approvals.plugins[plugin.id]
-    const alreadyApproved = previous?.sha256 === plugin.sha256
-    if (!alreadyApproved) await approve(options.origin, plugin, previous !== undefined, options.yes)
+    if (previous?.sha256 !== plugin.sha256 && !await approveChange(plugin, previous !== undefined)) {
+      if (previous) {
+        const previousPath = artifactPathFor(serverDir, plugin.id, previous.sha256)
+        try {
+          const bytes = new Uint8Array(await readFile(previousPath))
+          if (sha256(bytes) === previous.sha256) {
+            installed.push({ id: plugin.id, sha256: previous.sha256, path: resolve(previousPath) })
+          }
+        } catch {
+          // A declined update stays disabled if its previously approved bytes are gone.
+        }
+      }
+      continue
+    }
 
+    const artifactPath = artifactPathFor(serverDir, plugin.id, plugin.sha256)
     let artifact: Uint8Array
     try {
       artifact = new Uint8Array(await readFile(artifactPath))
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-      const encodedID = encodeURIComponent(plugin.id)
-      const encodedVersion = encodeURIComponent(plugin.version)
       artifact = new Uint8Array(await (await fetchChecked(
-        `${manifestURL}/${encodedID}/${encodedVersion}`,
-        env.OPENCODE_PASSWORD,
+        `${manifestURL}/${encodeURIComponent(plugin.id)}/${encodeURIComponent(plugin.version)}`,
+        password,
       )).arrayBuffer())
     }
     const actualHash = sha256(artifact)
@@ -281,34 +315,193 @@ export const syncPlugins = async (options: Options, env = process.env): Promise<
       sha256: plugin.sha256,
       permissions: plugin.permissions,
     }
-    installed.push(resolve(artifactPath))
+    installed.push({ id: plugin.id, sha256: plugin.sha256, path: resolve(artifactPath) })
   }
+  return installed
+}
+
+const writeActive = (controlDir: string, plugins: ActivePlugin[]): Promise<void> => atomicWrite(
+  join(controlDir, "active.json"),
+  JSON.stringify({ generation: crypto.randomUUID(), plugins }) + "\n",
+)
+
+export const syncPlugins = async (options: Options, env = process.env): Promise<SyncResult> => {
+  const { serverDir, approvalPath, trustPath, manifestURL } = pathsFor(options)
+  const approvals = await readJson<ApprovalFile>(approvalPath, { schemaVersion: 1, plugins: {} })
+  if (approvals.schemaVersion !== 1 || !approvals.plugins || typeof approvals.plugins !== "object") {
+    fail(`Invalid approval file: ${approvalPath}`)
+  }
+  const trust = await readJson<{ schemaVersion: 1; origin: string } | undefined>(trustPath, undefined)
+  if (trust && (trust.schemaVersion !== 1 || trust.origin !== options.origin)) {
+    fail(`Server identity mismatch in ${trustPath}`)
+  }
+
+  const manifest = await fetchManifest(manifestURL, env.OPENCODE_PASSWORD)
+  const active = await installManifest(
+    manifest,
+    approvals,
+    serverDir,
+    manifestURL,
+    env.OPENCODE_PASSWORD,
+    async (plugin, changed) => {
+      await approve(options.origin, plugin, changed, options.yes)
+      return true
+    },
+  )
 
   await atomicWrite(trustPath, JSON.stringify({ schemaVersion: 1, origin: options.origin }, null, 2) + "\n")
   await atomicWrite(approvalPath, JSON.stringify(approvals, null, 2) + "\n")
   const configDir = join(serverDir, "generated-config")
   const tuiConfig = join(configDir, "tui.json")
-  await atomicWrite(tuiConfig, JSON.stringify(mergedTuiConfig(await readTuiConfig(env), installed), null, 2) + "\n")
-  return { configDir, tuiConfig, installed }
+  const loaderPath = join(configDir, "ocx-hot-loader.ts")
+  const controlDir = join(serverDir, "clients", crypto.randomUUID())
+  await mkdir(controlDir, { recursive: true, mode: 0o700 })
+  await atomicWrite(join(configDir, "package.json"), JSON.stringify({
+    private: true,
+    dependencies: {
+      "@opencode-ai/plugin": "0.0.0-beta-18371",
+      "@opentui/core": "0.5.8",
+      "@opentui/solid": "0.5.8",
+      "solid-js": "1.9.12",
+    },
+  }, null, 2) + "\n")
+  await atomicWrite(loaderPath, ocxLoaderSource)
+  await writeActive(controlDir, active)
+  try {
+    await symlink(join(configDir, "node_modules"), join(serverDir, "node_modules"), "dir")
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+  }
+  await atomicWrite(
+    tuiConfig,
+    JSON.stringify(mergedTuiConfig(await readTuiConfig(env), [resolve(loaderPath)]), null, 2) + "\n",
+  )
+  return {
+    configDir,
+    tuiConfig,
+    controlDir,
+    installed: active.map((plugin) => plugin.path),
+    serverDir,
+  }
+}
+
+const waitForLiveApproval = async (
+  controlDir: string,
+  origin: string,
+  plugins: Array<{ plugin: TuiPluginManifestEntry; changed: boolean }>,
+  signal: AbortSignal,
+): Promise<Set<string>> => {
+  const nonce = crypto.randomUUID()
+  await atomicWrite(join(controlDir, "pending.json"), JSON.stringify({
+    nonce,
+    origin,
+    plugins: plugins.map(({ plugin, changed }) => ({
+      id: plugin.id,
+      sha256: plugin.sha256,
+      changed,
+    })),
+  }) + "\n")
+  while (!signal.aborted) {
+    const decision = await readJson<{ nonce?: string; approved?: string[] } | undefined>(
+      join(controlDir, "decision.json"),
+      undefined,
+    )
+    if (decision?.nonce === nonce && Array.isArray(decision.approved)) return new Set(decision.approved)
+    await wait(200, undefined, { signal }).catch(() => undefined)
+  }
+  throw signal.reason ?? new Error("OpenCode exited before plugin approval")
+}
+
+export const refreshPlugins = async (
+  options: Options,
+  synced: SyncResult,
+  signal: AbortSignal,
+  env = process.env,
+): Promise<void> => {
+  const { approvalPath, manifestURL } = pathsFor(options)
+  const approvals = await readJson<ApprovalFile>(approvalPath, { schemaVersion: 1, plugins: {} })
+  const manifest = await fetchManifest(manifestURL, env.OPENCODE_PASSWORD)
+  const changes = manifest.plugins
+    .filter((plugin) => approvals.plugins[plugin.id]?.sha256 !== plugin.sha256)
+    .map((plugin) => ({ plugin, changed: approvals.plugins[plugin.id] !== undefined }))
+  const allowed = options.yes || changes.length === 0
+    ? new Set(changes.map(({ plugin }) => plugin.sha256))
+    : await waitForLiveApproval(synced.controlDir, options.origin, changes, signal)
+  const active = await installManifest(
+    manifest,
+    approvals,
+    synced.serverDir,
+    manifestURL,
+    env.OPENCODE_PASSWORD,
+    async (plugin) => allowed.has(plugin.sha256),
+  )
+  await atomicWrite(approvalPath, JSON.stringify(approvals, null, 2) + "\n")
+  await writeActive(synced.controlDir, active)
+}
+
+export const monitorPlugins = async (
+  options: Options,
+  synced: SyncResult,
+  signal: AbortSignal,
+  env = process.env,
+): Promise<void> => {
+  const eventURL = `${options.origin}/api/generated-plugins/tui/events`
+  while (!signal.aborted) {
+    try {
+      const response = await fetch(eventURL, {
+        headers: authHeaders(env.OPENCODE_PASSWORD),
+        redirect: "error",
+        signal,
+      })
+      if (!response.ok || !response.body) throw new Error(`Registry event stream returned HTTP ${response.status}`)
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ""
+      while (!signal.aborted) {
+        const next = await reader.read()
+        if (next.done) break
+        buffer += decoder.decode(next.value, { stream: true })
+        let boundary: number
+        while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+          const event = buffer.slice(0, boundary)
+          buffer = buffer.slice(boundary + 2)
+          if (event.startsWith("event: changed")) await refreshPlugins(options, synced, signal, env)
+        }
+      }
+    } catch (error) {
+      if (signal.aborted) return
+      console.error(`ocx: plugin update stream disconnected: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    await wait(1_000, undefined, { signal }).catch(() => undefined)
+  }
 }
 
 const launch = async (options: Options, env = process.env): Promise<number> => {
   const synced = await syncPlugins(options, env)
+  const monitoring = new AbortController()
   const child = spawn(options.binary, ["--server", options.origin, ...options.childArgs], {
     stdio: "inherit",
     env: {
       ...env,
       OPENCODE_CONFIG_DIR: synced.configDir,
       OPENCODE_TUI_CONFIG: synced.tuiConfig,
+      OCX_CONTROL_DIR: synced.controlDir,
     },
   })
-  return await new Promise<number>((resolveExit, reject) => {
-    child.once("error", reject)
-    child.once("exit", (code, signal) => {
-      if (signal) reject(new Error(`${options.binary} exited after signal ${signal}`))
-      else resolveExit(code ?? 1)
+  const updates = monitorPlugins(options, synced, monitoring.signal, env)
+  try {
+    return await new Promise<number>((resolveExit, reject) => {
+      child.once("error", reject)
+      child.once("exit", (code, signal) => {
+        if (signal) reject(new Error(`${options.binary} exited after signal ${signal}`))
+        else resolveExit(code ?? 1)
+      })
     })
-  })
+  } finally {
+    monitoring.abort()
+    await updates.catch(() => undefined)
+    await rm(synced.controlDir, { recursive: true, force: true })
+  }
 }
 
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {

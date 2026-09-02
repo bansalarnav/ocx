@@ -22,10 +22,13 @@
     "@opencode-ai/plugin": "0.0.0-beta-18371",
     "@opencode-ai/server": "0.0.0-beta-18371",
     "@opencode-ai/util": "0.0.0-beta-18371",
+    "@opentui/core": "0.5.8",
+    "@opentui/solid": "0.5.8",
     "effect": "4.0.0-rc.111",
     "express": "5.2.1",
     "jsonc-parser": "3.3.1",
     "quickjs-emscripten-core": "0.32.0",
+    "solid-js": "1.9.12",
     "zod": "4.1.8"
   },
   "devDependencies": {

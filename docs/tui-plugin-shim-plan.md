@@ -2,11 +2,11 @@
 
 ## Status
 
-Phase 1 is implemented. The Durable Object exposes authenticated manifest and immutable, content-addressed artifact routes. The `ocx` launcher keeps per-origin approvals and cache entries, verifies SHA-256 digests, creates a disposable TUI config, and starts the unmodified CLI.
+Phase 1 is implemented. The Durable Object exposes authenticated manifest, immutable content-addressed artifact, and registry-event routes. The `ocx` launcher keeps per-origin approvals and cache entries, verifies SHA-256 digests, creates a disposable TUI config, and starts the unmodified CLI. Connected clients receive registry changes and hot-reload approved plugin versions through a local loader plugin.
 
 The original plan referred to `cli.json` and a managed `XDG_CONFIG_HOME`. The matching OpenCode beta uses `tui.json` for TUI plugins and supports `OPENCODE_TUI_CONFIG` and `OPENCODE_CONFIG_DIR`. The implementation uses those variables, which preserves the user's normal config and credential locations.
 
-Signing keys, retained rollback history, permission changes, pinning, disabling, and compatibility checks remain phase 2 work.
+Signing keys, retained rollback history, permission changes, pinning, command-line disabling, and compatibility checks remain phase 2 work.
 
 The chosen TUI model permits arbitrary OpenCode CLI plugins. Agent-written TUI code will run locally inside the normal OpenCode terminal process, so installation must be explicit and every downloaded artifact must be pinned and verifiable.
 
@@ -123,7 +123,7 @@ The manifest must declare its supported OpenCode CLI and TUI plugin API versions
 
 The local cache key should include the artifact hash, while the generated configuration should point at the selected hash. This makes rollback deterministic and prevents an update from changing a running client.
 
-Plugin updates take effect on the next launch at first. Hot reload can be investigated after the static path is reliable.
+Plugin updates take effect immediately for connected `ocx` clients after local approval. The server broadcasts only that the registry changed. Each client fetches the manifest, verifies the selected artifact, and controls activation.
 
 ## Server authoring flow
 

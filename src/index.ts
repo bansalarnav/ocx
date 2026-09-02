@@ -11,7 +11,11 @@ import { makeLivePluginRegistry } from "./plugin-manager/registry"
 import { makePluginStore } from "./plugin-manager/store"
 import type { PluginStore } from "./plugin-manager/types"
 import { finalizeWithResponse } from "./response-lifecycle"
-import { makeTuiRegistryHandler } from "./tui-registry"
+import {
+  makeTuiRegistryEvents,
+  makeTuiRegistryHandler,
+  withTuiRegistryEvents,
+} from "./tui-registry"
 
 interface Env {
   OPENCODE: DurableObjectNamespace<OpenCodeDO>
@@ -110,8 +114,9 @@ export class OpenCodeDO extends DurableObject<Env> {
 
   constructor(state: DurableObjectState, env: Env) {
     super(state, env)
-    const store = makePluginStore(state.storage)
-    this.tuiRegistry = makeTuiRegistryHandler(store, env.OPENCODE_PASSWORD)
+    const events = makeTuiRegistryEvents()
+    const store = withTuiRegistryEvents(makePluginStore(state.storage), events)
+    this.tuiRegistry = makeTuiRegistryHandler(store, env.OPENCODE_PASSWORD, events)
     this.handlerRef = state.blockConcurrencyWhile(() => makeHandlerRef(state, env, store))
   }
 

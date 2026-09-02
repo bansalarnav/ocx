@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test"
 import type { PluginStore, StoredPlugin } from "../src/plugin-manager/types"
-import { makeTuiRegistryHandler, type TuiPluginManifest } from "../src/tui-registry"
+import {
+  makeTuiRegistryEvents,
+  makeTuiRegistryHandler,
+  type TuiPluginManifest,
+  withTuiRegistryEvents,
+} from "../src/tui-registry"
 
 const plugin = (overrides: Partial<StoredPlugin> = {}): StoredPlugin => ({
   id: "dashboard",
@@ -55,5 +60,18 @@ describe("TUI registry", () => {
   test("does not claim neighboring routes", async () => {
     const handler = makeTuiRegistryHandler(memoryStore([]))
     expect(await handler(new Request("https://example.test/api/generated-plugins/tuix"))).toBeUndefined()
+  })
+
+  test("broadcasts store changes to connected clients", async () => {
+    const events = makeTuiRegistryEvents()
+    const store = withTuiRegistryEvents(memoryStore([]), events)
+    const handler = makeTuiRegistryHandler(store, undefined, events)
+    const response = await handler(new Request("https://example.test/api/generated-plugins/tui/events"))
+    const reader = response!.body!.getReader()
+    const decoder = new TextDecoder()
+    expect(decoder.decode((await reader.read()).value)).toContain("event: ready")
+    await store.put(plugin())
+    expect(decoder.decode((await reader.read()).value)).toContain("event: changed")
+    await reader.cancel()
   })
 })

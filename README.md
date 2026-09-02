@@ -38,6 +38,10 @@ bun run ocx --server http://localhost:8787 -- --log-level DEBUG
 
 The cache lives under `$XDG_DATA_HOME/ocx`, or `~/.local/share/ocx` when `XDG_DATA_HOME` is unset. Each server origin has a separate cache and approval file. A first install and every content change requires confirmation. `--yes` is available for trusted non-interactive use.
 
+`ocx` keeps an authenticated event stream open while the TUI runs. Publishing, editing, enabling, or disabling a TUI plugin notifies every connected `ocx` client. Each client shows its own approval dialog for new code, verifies and caches the artifact, then replaces the running plugin without restarting OpenCode. Starting with `--yes` also approves live updates automatically.
+
+Hot reload uses a small local loader plugin because the pinned OpenCode beta does not expose its newer runtime plugin-add API. A failed replacement leaves the previous plugin active. Plugins must return cleanup functions so the loader can remove the previous version cleanly.
+
 The launcher reads the user's existing `tui.json` or `tui.jsonc`, but does not edit it. It passes the generated file through `OPENCODE_TUI_CONFIG` and uses a per-server `OPENCODE_CONFIG_DIR` so OpenCode can resolve the TUI runtime imports.
 
 ## Protect and deploy it
