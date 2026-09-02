@@ -122,11 +122,8 @@ const inspectPluginWorkspace = (workspace: PluginWorkspace) => {
   if (tuiEntry !== undefined) {
     const source = files[tuiEntry]!
     if (!source.includes("@opencode-ai/plugin/tui")) throw new Error("tui.tsx must import @opencode-ai/plugin/tui")
-    if (!source.includes("@jsxImportSource @opentui/solid")) {
-      throw new Error("tui.tsx must declare @jsxImportSource @opentui/solid")
-    }
-    if (!/\btui\s*[:,]/.test(source) || !/export\s+default\s+/.test(source)) {
-      throw new Error("tui.tsx must default-export a module with an id and tui function")
+    if (!/\bsetup\s*\(/.test(source) || !/export\s+default\s+/.test(source)) {
+      throw new Error("tui.tsx must default-export a Plugin.define module with an id and setup function")
     }
   }
 

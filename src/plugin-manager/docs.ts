@@ -48,30 +48,24 @@ The server runs the bundled module in QuickJS. The current context bridge implem
 TUI code uses the normal TUI plugin format:
 
 \`\`\`tsx
-/** @jsxImportSource @opentui/solid */
-import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui"
+import { Plugin } from "@opencode-ai/plugin/tui"
 
-const tui: TuiPlugin = async (api) => {
-  api.slots.register({
-    slots: {
-      sidebar_footer(_context, { session_id }) {
-        return <text>Session: {session_id}</text>
-      },
-    },
-  })
-}
-
-const plugin: TuiPluginModule & { id: string } = {
+export default Plugin.define({
   id: "hello",
-  tui,
-}
-
-export default plugin
+  setup(ctx) {
+    return ctx.ui.slot({
+      append: "sidebar.footer",
+      render({ sessionID }) {
+        return <text>Session: {sessionID}</text>
+      },
+    })
+  },
+})
 \`\`\`
 
-The TUI entrypoint must use the current \`{ id, tui }\` module shape and include the \`@jsxImportSource @opentui/solid\` directive when it uses JSX. Register UI through \`api.slots.register({ slots: { ... } })\`. Host slots include \`app\`, \`app_bottom\`, \`home_logo\`, \`home_prompt\`, \`home_prompt_right\`, \`session_prompt\`, \`session_prompt_right\`, \`home_bottom\`, \`home_footer\`, \`sidebar_title\`, \`sidebar_content\`, and \`sidebar_footer\`. To add content inside the existing right sidebar, implement \`sidebar_content\`. Use \`api.ui.toast({ variant, message })\` for toasts.
+The pinned client API uses \`Plugin.define({ id, setup })\`. Register UI with \`ctx.ui.slot(...)\`. Supported slots include \`app\`, \`home.footer\`, \`prompt.footer\`, \`prompt.footer.status\`, \`prompt.footer.file\`, \`session.composer.top\`, \`sidebar.content\`, and \`sidebar.footer\`. To add content inside the existing right sidebar, append to \`sidebar.content\`. Use \`ctx.ui.toast.show({ variant, message })\` for toasts.
 
-The local TUI API also includes \`api.keymap\`, \`api.route\`, \`api.renderer\`, \`api.state\`, \`api.client\`, \`api.kv\`, themes, attention notifications, and lifecycle hooks. The server bundles and stores \`tui.tsx\`. Connected \`ocx\` clients ask for local approval, verify the artifact, and load it. Later edits hot-reload on every connected and approving client.
+The local TUI API also includes \`ctx.keymap\`, \`ctx.renderer\`, \`ctx.data\`, \`ctx.client\`, \`ctx.storage\`, themes, attention notifications, and Markdown renderers. The server bundles and stores \`tui.tsx\`. Connected \`ocx\` clients ask for local approval, verify the artifact, and load it. Later edits hot-reload on every connected and approving client. Return cleanup functions from registrations so the previous version can be removed cleanly.
 
 ## Dependencies
 
