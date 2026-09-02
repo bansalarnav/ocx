@@ -2,13 +2,17 @@
   "name": "opencode-durable-object",
   "private": true,
   "type": "module",
+  "bin": {
+    "ocx": "bin/ocx.ts"
+  },
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "device": "bun device/server.ts",
     "device:tunnel": "bash device/tunnel.sh",
     "test": "bun test",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.device.json"
+    "ocx": "bun bin/ocx.ts",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.device.json && tsc -p tsconfig.ocx.json"
   },
   "dependencies": {
     "@cloudflare/worker-bundler": "^0.2.3",
@@ -20,6 +24,7 @@
     "@opencode-ai/util": "0.0.0-beta-18371",
     "effect": "4.0.0-rc.111",
     "express": "5.2.1",
+    "jsonc-parser": "3.3.1",
     "quickjs-emscripten-core": "0.32.0",
     "zod": "4.1.8"
   },

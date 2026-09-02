@@ -2,7 +2,11 @@
 
 ## Status
 
-This is a later phase. The first implementation should build the server-side plugin registry and sandboxed runtime without depending on any client changes.
+Phase 1 is implemented. The Durable Object exposes authenticated manifest and immutable, content-addressed artifact routes. The `ocx` launcher keeps per-origin approvals and cache entries, verifies SHA-256 digests, creates a disposable TUI config, and starts the unmodified CLI.
+
+The original plan referred to `cli.json` and a managed `XDG_CONFIG_HOME`. The matching OpenCode beta uses `tui.json` for TUI plugins and supports `OPENCODE_TUI_CONFIG` and `OPENCODE_CONFIG_DIR`. The implementation uses those variables, which preserves the user's normal config and credential locations.
+
+Signing keys, retained rollback history, permission changes, pinning, disabling, and compatibility checks remain phase 2 work.
 
 The chosen TUI model permits arbitrary OpenCode CLI plugins. Agent-written TUI code will run locally inside the normal OpenCode terminal process, so installation must be explicit and every downloaded artifact must be pinned and verifiable.
 

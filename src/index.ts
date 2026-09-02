@@ -9,7 +9,9 @@ import { makePluginManager } from "./plugin-manager/manager"
 import { makeQuickJSPlugin } from "./plugin-manager/quickjs"
 import { makeLivePluginRegistry } from "./plugin-manager/registry"
 import { makePluginStore } from "./plugin-manager/store"
+import type { PluginStore } from "./plugin-manager/types"
 import { finalizeWithResponse } from "./response-lifecycle"
+import { makeTuiRegistryHandler } from "./tui-registry"
 
 interface Env {
   OPENCODE: DurableObjectNamespace<OpenCodeDO>
@@ -72,9 +74,9 @@ const makeHandler = (
 const makeHandlerRef = (
   state: DurableObjectState,
   env: Env,
+  store: PluginStore,
 ): Promise<HandlerRef> => {
   const acquire = async () => {
-    const store = makePluginStore(state.storage)
     const registry = makeLivePluginRegistry([deviceToolsOnly])
     await registry.upsert(makePluginManager(store, registry))
     for (const plugin of await store.list()) {
@@ -104,13 +106,19 @@ const closeScope = (scope: Scope.Closeable): Promise<void> =>
 
 export class OpenCodeDO extends DurableObject<Env> {
   private readonly handlerRef: Promise<HandlerRef>
+  private readonly tuiRegistry: (request: Request) => Promise<Response | undefined>
 
   constructor(state: DurableObjectState, env: Env) {
     super(state, env)
-    this.handlerRef = state.blockConcurrencyWhile(() => makeHandlerRef(state, env))
+    const store = makePluginStore(state.storage)
+    this.tuiRegistry = makeTuiRegistryHandler(store, env.OPENCODE_PASSWORD)
+    this.handlerRef = state.blockConcurrencyWhile(() => makeHandlerRef(state, env, store))
   }
 
   async fetch(request: Request): Promise<Response> {
+    const registryResponse = await this.tuiRegistry(request)
+    if (registryResponse !== undefined) return registryResponse
+
     const scope = await Effect.runPromise(Scope.make())
     let closing: Promise<void> | undefined
     const close = () => (closing ??= closeScope(scope))

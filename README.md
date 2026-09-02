@@ -20,6 +20,26 @@ opencode2 --server http://localhost:8787
 
 The v2 preview CLI may be named `opencode` instead of `opencode2` in your installation.
 
+## Load server-authored TUI plugins
+
+`ocx` is a small wrapper around `opencode2`. It fetches enabled TUI plugins from this Worker, asks before installing local code, verifies each artifact's SHA-256 digest, writes a disposable `tui.json`, then starts the normal CLI process.
+
+From this checkout:
+
+```sh
+OPENCODE_PASSWORD=secret bun run ocx --server https://opencode-durable-object.<subdomain>.workers.dev
+```
+
+Use `--binary opencode` if the preview executable on your machine has that name. Put options for OpenCode after `--`:
+
+```sh
+bun run ocx --server http://localhost:8787 -- --log-level DEBUG
+```
+
+The cache lives under `$XDG_DATA_HOME/ocx`, or `~/.local/share/ocx` when `XDG_DATA_HOME` is unset. Each server origin has a separate cache and approval file. A first install and every content change requires confirmation. `--yes` is available for trusted non-interactive use.
+
+The launcher reads the user's existing `tui.json` or `tui.jsonc`, but does not edit it. It passes the generated file through `OPENCODE_TUI_CONFIG` and uses a per-server `OPENCODE_CONFIG_DIR` so OpenCode can resolve the TUI runtime imports.
+
 ## Protect and deploy it
 
 Set a password before exposing the Worker publicly:
