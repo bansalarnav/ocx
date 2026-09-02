@@ -1,3 +1,4 @@
+import { Model } from "@opencode-ai/plugin"
 import type { Context } from "@opencode-ai/plugin/promise/plugin"
 import { fromPromise } from "@opencode-ai/plugin/promise/adapter"
 import { bundlePluginFiles } from "./bundler"
@@ -213,6 +214,7 @@ export const makePluginManager = (
         agent.description = "Edits a normal plugin project in a private virtual filesystem"
         agent.mode = "subagent"
         agent.hidden = true
+        agent.model = Model.Ref.parse("opencode/big-pickle")
         agent.system = authorSystem
         agent.steps = 40
         agent.permissions = [{ action: "*", resource: "*", effect: "allow" }]
