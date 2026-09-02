@@ -62,14 +62,19 @@ const normalizePath = (input: unknown): string => {
   return path
 }
 
-const globPattern = (pattern: string): RegExp => {
+export const globPattern = (pattern: string): RegExp => {
   let expression = "^"
   for (let index = 0; index < pattern.length; index++) {
     const character = pattern[index]!
     if (character === "*") {
       if (pattern[index + 1] === "*") {
-        expression += ".*"
-        index++
+        if (pattern[index + 2] === "/") {
+          expression += "(?:.*/)?"
+          index += 2
+        } else {
+          expression += ".*"
+          index++
+        }
       } else expression += "[^/]*"
     } else if (character === "?") expression += "[^/]"
     else expression += character.replace(/[|\\{}()[\]^$+?.]/g, "\\$&")
@@ -122,8 +127,11 @@ const inspectPluginWorkspace = (workspace: PluginWorkspace) => {
   if (tuiEntry !== undefined) {
     const source = files[tuiEntry]!
     if (!source.includes("@opencode-ai/plugin/tui")) throw new Error("tui.tsx must import @opencode-ai/plugin/tui")
-    if (!/\bsetup\s*\(/.test(source) || !/export\s+default\s+/.test(source)) {
-      throw new Error("tui.tsx must default-export a Plugin.define module with an id and setup function")
+    if (!/import\s*\{[^}]*\bPlugin\b[^}]*\}\s*from\s*["']@opencode-ai\/plugin\/tui["']/.test(source)) {
+      throw new Error("tui.tsx must use the named Plugin export from @opencode-ai/plugin/tui")
+    }
+    if (!/\bPlugin\.define\s*\(/.test(source) || !/\bsetup\s*\(/.test(source) || !/export\s+default\s+/.test(source)) {
+      throw new Error("tui.tsx must default-export Plugin.define with an id and setup function")
     }
   }
 
