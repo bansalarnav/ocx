@@ -3,7 +3,7 @@ import { createHash } from "node:crypto"
 import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises"
 import { createServer } from "node:http"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { join } from "node:path"
 import { parseArguments, refreshPlugins, syncPlugins } from "../bin/ocx"
 import { ocxLoaderSource } from "../bin/ocx-loader-source"
 
@@ -20,67 +20,9 @@ const temporaryDirectory = async (): Promise<string> => {
 }
 
 describe("ocx", () => {
-  test("emits a syntactically valid local hot-loader plugin", () => {
+  test("emits a syntactically valid local approval plugin", () => {
     const transpiler = new Bun.Transpiler({ loader: "tsx", target: "bun" })
     expect(() => transpiler.transformSync(ocxLoaderSource)).not.toThrow()
-  })
-
-  test("the local loader replaces a running plugin and calls its cleanup", async () => {
-    const root = await mkdtemp(join(resolve("."), ".ocx-loader-test-"))
-    temporaryDirectories.push(root)
-    const control = join(root, "control")
-    await mkdir(control)
-    const loaderPath = join(root, "loader.ts")
-    const firstPath = join(root, "first.ts")
-    const secondPath = join(root, "second.ts")
-    await writeFile(loaderPath, ocxLoaderSource)
-    await writeFile(firstPath, `export default { id: "demo", setup() {
-      globalThis.__ocxLoaderTest = "first"
-      return () => { globalThis.__ocxLoaderCleanup = true }
-    } }`)
-    await writeFile(secondPath, `export default { id: "demo", setup() {
-      globalThis.__ocxLoaderTest = "second"
-    } }`)
-    await writeFile(join(control, "active.json"), JSON.stringify({
-      generation: "one",
-      plugins: [{ id: "demo", sha256: "one", path: firstPath }],
-    }))
-    const previousControl = process.env.OCX_CONTROL_DIR
-    process.env.OCX_CONTROL_DIR = control
-    const globalState = globalThis as typeof globalThis & {
-      __ocxLoaderTest?: string
-      __ocxLoaderCleanup?: boolean
-    }
-    delete globalState.__ocxLoaderTest
-    delete globalState.__ocxLoaderCleanup
-    try {
-      const definition = (await import(`${loaderPath}?test=${crypto.randomUUID()}`)).default
-      const cleanup = await definition.setup({
-        ui: {
-          dialog: { confirm: async () => true },
-          toast: { show: () => undefined },
-        },
-      })
-      for (let attempt = 0; attempt < 20 && globalState.__ocxLoaderTest !== "first"; attempt++) {
-        await Bun.sleep(25)
-      }
-      expect(globalState.__ocxLoaderTest).toBe("first")
-      await writeFile(join(control, "active.json"), JSON.stringify({
-        generation: "two",
-        plugins: [{ id: "demo", sha256: "two", path: secondPath }],
-      }))
-      for (let attempt = 0; attempt < 20 && globalState.__ocxLoaderTest !== "second"; attempt++) {
-        await Bun.sleep(25)
-      }
-      expect(globalState.__ocxLoaderTest).toBe("second")
-      expect(globalState.__ocxLoaderCleanup).toBe(true)
-      await cleanup?.()
-    } finally {
-      if (previousControl === undefined) delete process.env.OCX_CONTROL_DIR
-      else process.env.OCX_CONTROL_DIR = previousControl
-      delete globalState.__ocxLoaderTest
-      delete globalState.__ocxLoaderCleanup
-    }
   })
 
   test("normalizes a server origin and keeps child arguments separate", () => {
@@ -154,10 +96,13 @@ describe("ocx", () => {
       expect(await readFile(result.installed[0]!, "utf8")).toBe(source)
       const config = JSON.parse(await readFile(result.tuiConfig, "utf8"))
       expect(config.theme).toBe("smoke")
-      expect(config.plugin).toEqual([
-        "existing-plugin",
-        join(result.configDir, "ocx-hot-loader.ts"),
-      ])
+      expect(config.plugin).toEqual(["existing-plugin"])
+      expect(await readFile(join(result.configDir, "plugins", "demo", "index.ts"), "utf8")).toBe("export {}\n")
+      expect(await readFile(join(result.configDir, "plugins", "demo", "tui.tsx"), "utf8")).toBe(source)
+      expect(await readFile(
+        join(result.configDir, "plugins", "ocx-plugin-approvals", "tui.ts"),
+        "utf8",
+      )).toContain('id: "ocx-plugin-approvals"')
       const active = JSON.parse(await readFile(join(result.controlDir, "active.json"), "utf8"))
       expect(active.plugins).toEqual([{ id: "demo", sha256: hash, path: result.installed[0] }])
       expect(authorization).toBe(`Basic ${Buffer.from("opencode:secret").toString("base64")}`)
@@ -180,6 +125,7 @@ describe("ocx", () => {
       const refreshed = JSON.parse(await readFile(join(result.controlDir, "active.json"), "utf8"))
       expect(refreshed.plugins[0].sha256).toBe(hash)
       expect(await readFile(refreshed.plugins[0].path, "utf8")).toBe(source)
+      expect(refreshed.plugins[0].path).toBe(result.installed[0])
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
     }

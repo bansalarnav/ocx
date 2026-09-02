@@ -7,6 +7,7 @@ import {
   access,
   chmod,
   mkdir,
+  readdir,
   readFile,
   rename,
   rm,
@@ -233,18 +234,10 @@ const readTuiConfig = async (env = process.env): Promise<Record<string, unknown>
 
 const mergedTuiConfig = (
   userConfig: Record<string, unknown>,
-  pluginPaths: string[],
 ): Record<string, unknown> => {
-  const configured = Array.isArray(userConfig.plugin) ? userConfig.plugin : []
-  const managed = new Set(pluginPaths)
-  const retained = configured.filter((entry) => {
-    const spec = Array.isArray(entry) ? entry[0] : entry
-    return typeof spec !== "string" || !managed.has(spec)
-  })
   return {
     ...userConfig,
     $schema: typeof userConfig.$schema === "string" ? userConfig.$schema : "https://opencode.ai/tui.json",
-    plugin: [...retained, ...pluginPaths],
   }
 }
 
@@ -325,6 +318,32 @@ const writeActive = (controlDir: string, plugins: ActivePlugin[]): Promise<void>
   JSON.stringify({ generation: crypto.randomUUID(), plugins }) + "\n",
 )
 
+const approvalPluginDirectory = "ocx-plugin-approvals"
+
+const materializeNativePlugins = async (
+  configDir: string,
+  plugins: ActivePlugin[],
+): Promise<ActivePlugin[]> => {
+  const root = join(configDir, "plugins")
+  await mkdir(root, { recursive: true, mode: 0o700 })
+  const active = new Set(plugins.map((plugin) => plugin.id))
+  const entries = await readdir(root, { withFileTypes: true })
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name === approvalPluginDirectory || active.has(entry.name)) continue
+    await rm(join(root, entry.name), { recursive: true, force: true })
+  }
+
+  const installed: ActivePlugin[] = []
+  for (const plugin of plugins) {
+    const directory = join(root, plugin.id)
+    const entrypoint = join(directory, "tui.tsx")
+    await atomicWrite(join(directory, "index.ts"), "export {}\n")
+    await atomicWrite(entrypoint, new Uint8Array(await readFile(plugin.path)))
+    installed.push({ ...plugin, path: resolve(entrypoint) })
+  }
+  return installed
+}
+
 export const syncPlugins = async (options: Options, env = process.env): Promise<SyncResult> => {
   const { serverDir, approvalPath, trustPath, manifestURL } = pathsFor(options)
   const approvals = await readJson<ApprovalFile>(approvalPath, { schemaVersion: 1, plugins: {} })
@@ -353,20 +372,22 @@ export const syncPlugins = async (options: Options, env = process.env): Promise<
   await atomicWrite(approvalPath, JSON.stringify(approvals, null, 2) + "\n")
   const configDir = join(serverDir, "generated-config")
   const tuiConfig = join(configDir, "tui.json")
-  const loaderPath = join(configDir, "ocx-hot-loader.ts")
+  const approvalPluginDir = join(configDir, "plugins", approvalPluginDirectory)
   const controlDir = join(serverDir, "clients", crypto.randomUUID())
   await mkdir(controlDir, { recursive: true, mode: 0o700 })
   await atomicWrite(join(configDir, "package.json"), JSON.stringify({
     private: true,
     dependencies: {
-      "@opencode-ai/plugin": "0.0.0-beta-18371",
-      "@opentui/core": "0.5.8",
-      "@opentui/solid": "0.5.8",
-      "solid-js": "1.9.12",
+      "@opencode-ai/plugin": "0.0.0-beta-18866",
+      "@opentui/core": "0.5.9",
+      "@opentui/solid": "0.5.9",
+      "solid-js": "1.9.15",
     },
   }, null, 2) + "\n")
-  await atomicWrite(loaderPath, ocxLoaderSource)
-  await writeActive(controlDir, active)
+  await atomicWrite(join(approvalPluginDir, "index.ts"), "export {}\n")
+  await atomicWrite(join(approvalPluginDir, "tui.ts"), ocxLoaderSource)
+  const native = await materializeNativePlugins(configDir, active)
+  await writeActive(controlDir, native)
   try {
     await symlink(join(configDir, "node_modules"), join(serverDir, "node_modules"), "dir")
   } catch (error) {
@@ -374,13 +395,13 @@ export const syncPlugins = async (options: Options, env = process.env): Promise<
   }
   await atomicWrite(
     tuiConfig,
-    JSON.stringify(mergedTuiConfig(await readTuiConfig(env), [resolve(loaderPath)]), null, 2) + "\n",
+    JSON.stringify(mergedTuiConfig(await readTuiConfig(env)), null, 2) + "\n",
   )
   return {
     configDir,
     tuiConfig,
     controlDir,
-    installed: active.map((plugin) => plugin.path),
+    installed: native.map((plugin) => plugin.path),
     serverDir,
   }
 }
@@ -436,7 +457,8 @@ export const refreshPlugins = async (
     async (plugin) => allowed.has(plugin.sha256),
   )
   await atomicWrite(approvalPath, JSON.stringify(approvals, null, 2) + "\n")
-  await writeActive(synced.controlDir, active)
+  const native = await materializeNativePlugins(synced.configDir, active)
+  await writeActive(synced.controlDir, native)
 }
 
 export const monitorPlugins = async (

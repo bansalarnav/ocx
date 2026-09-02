@@ -2,9 +2,9 @@
 
 ## Status
 
-Phase 1 is implemented. The Durable Object exposes authenticated manifest, immutable content-addressed artifact, and registry-event routes. The `ocx` launcher keeps per-origin approvals and cache entries, verifies SHA-256 digests, creates a disposable TUI config, and starts the unmodified CLI. Connected clients receive registry changes and hot-reload approved plugin versions through a local loader plugin.
+Phase 1 is implemented. The Durable Object exposes authenticated manifest, immutable content-addressed artifact, and registry-event routes. The `ocx` launcher keeps per-origin approvals and cache entries, verifies SHA-256 digests, creates a disposable TUI config, and starts the unmodified CLI. Connected clients receive registry changes and materialize approved versions into OpenCode's native watched plugin directories.
 
-The original plan referred to `cli.json` and a managed `XDG_CONFIG_HOME`. The matching OpenCode beta uses `tui.json` for TUI plugins and supports `OPENCODE_TUI_CONFIG` and `OPENCODE_CONFIG_DIR`. The implementation uses those variables, which preserves the user's normal config and credential locations.
+The original plan referred to `cli.json` and a managed `XDG_CONFIG_HOME`. The matching OpenCode beta uses `tui.json` for TUI settings and auto-discovers local TUI plugins under `OPENCODE_CONFIG_DIR/plugins/<name>/`. Each discovered directory requires an `index.ts` or `index.js` anchor plus its `tui.tsx`; it does not require a `package.json`. The implementation uses `OPENCODE_TUI_CONFIG` and `OPENCODE_CONFIG_DIR`, which preserves the user's normal config and credential locations.
 
 Signing keys, retained rollback history, permission changes, pinning, command-line disabling, and compatibility checks remain phase 2 work.
 
@@ -75,7 +75,9 @@ Suggested local layout:
     trust.json
     approvals.json
     plugins/<plugin-id>/<sha256>/tui.tsx
-    generated-config/cli.json
+    generated-config/tui.json
+    generated-config/plugins/<plugin-id>/index.ts
+    generated-config/plugins/<plugin-id>/tui.tsx
 ```
 
 On startup, the launcher should:
@@ -85,8 +87,8 @@ On startup, the launcher should:
 3. Compare enabled versions with the local lock and cache.
 4. Ask for approval before the first install and whenever declared permissions expand.
 5. Download artifacts into a temporary file, verify the hash and signature, then move the verified file into the immutable cache path.
-6. Produce a merged `cli.json` containing the user's settings plus absolute paths to approved plugins.
-7. Launch OpenCode with a managed `XDG_CONFIG_HOME` and the requested remote server.
+6. Produce a merged `tui.json` and materialize approved plugins in the managed config directory's native `plugins/<id>/` layout.
+7. Launch OpenCode with `OPENCODE_TUI_CONFIG`, `OPENCODE_CONFIG_DIR`, and the requested remote server.
 
 The generated configuration is disposable. The launcher should regenerate it rather than edit it in place. User settings remain owned by the user.
 
@@ -168,7 +170,7 @@ Publishing a TUI plugin should not enable it automatically for existing clients.
 - Multi-file artifacts.
 - Static assets.
 - Carefully controlled dependencies without install scripts.
-- Optional hot reload.
+- Third-party package dependencies.
 
 ## Open questions
 

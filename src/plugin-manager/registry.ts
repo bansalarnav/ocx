@@ -17,7 +17,7 @@ export const makeLivePluginRegistry = (
   const plugins = new Map(
     initial.map((plugin) => [plugin.id, {
       ...plugin,
-      version: String(++generation),
+      revision: String(++generation),
       source: { type: "sdk" as const },
     }]),
   )
@@ -34,7 +34,7 @@ export const makeLivePluginRegistry = (
         register: (plugin) => Effect.sync(() => {
           plugins.set(plugin.id, {
             ...plugin,
-            version: String(++generation),
+            revision: String(++generation),
             source: { type: "sdk" as const },
           })
         }).pipe(Effect.andThen(notify()), Effect.asVoid),
@@ -49,7 +49,7 @@ export const makeLivePluginRegistry = (
     async upsert(plugin) {
       plugins.set(plugin.id, {
         ...plugin,
-        version: String(++generation),
+        revision: String(++generation),
         source: { type: "sdk" as const },
       })
       await publish?.()

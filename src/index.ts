@@ -1,7 +1,9 @@
 import { SdkPlugins } from "@opencode-ai/core/plugin/sdk"
+import { Bus } from "@opencode-ai/core/bus"
 import { define as definePlugin } from "@opencode-ai/plugin/effect/plugin"
 import { ServerFetch } from "@opencode-ai/server/fetch"
 import { ServerWorkerd } from "@opencode-ai/server/workerd"
+import { makeGlobalNode } from "@opencode-ai/util/effect/app-node"
 import { DurableObject } from "cloudflare:workers"
 import { Effect, Exit, Layer, RcRef, Scope, type Context } from "effect"
 import { deviceMcpServers } from "./device-mcps"
@@ -67,10 +69,16 @@ const makeHandler = (
     config: { content: serverConfig(env) },
   }
 
+  const sdkPluginsNode = makeGlobalNode({
+    service: SdkPlugins.Service,
+    layer: sdkPluginsLayer,
+    deps: [Bus.node],
+  })
+
   return ServerFetch.make(ServerWorkerd.serverOptions(workerdOptions), {
     overrides: [
       ...ServerWorkerd.replacements(workerdOptions),
-      [SdkPlugins.node, sdkPluginsLayer],
+      SdkPlugins.node.replace(sdkPluginsNode),
     ],
   })
 }
