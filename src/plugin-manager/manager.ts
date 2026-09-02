@@ -27,6 +27,11 @@ const authorAllowedTools = new Set([
   "question",
 ])
 
+const authorModel = {
+  providerID: "opencode",
+  id: "big-pickle",
+} as never
+
 const objectInput = (
   properties: Record<string, unknown>,
   required: string[] = [],
@@ -194,6 +199,20 @@ const assistantText = (parts: unknown): string => {
   return "Plugin author completed without a text summary."
 }
 
+const assistantFailure = (parts: unknown): string | undefined => {
+  if (!Array.isArray(parts)) return undefined
+  for (const part of [...parts].reverse()) {
+    if (!part || typeof part !== "object" || (part as { type?: string }).type !== "assistant") continue
+    const error = (part as { error?: unknown }).error
+    if (!error || typeof error !== "object") return undefined
+    const message = (error as { message?: unknown }).message
+    const status = (error as { status?: unknown }).status
+    const detail = typeof message === "string" ? message : "Unknown model error"
+    return typeof status === "number" ? `Plugin author model failed (${status}): ${detail}` : `Plugin author model failed: ${detail}`
+  }
+  return undefined
+}
+
 export const makePluginManager = (
   store: PluginStore,
   registry: LivePluginRegistry,
@@ -213,10 +232,7 @@ export const makePluginManager = (
         agent.description = "Edits a normal plugin project in a private virtual filesystem"
         agent.mode = "subagent"
         agent.hidden = true
-        agent.model = {
-          providerID: "opencode",
-          id: "big-pickle",
-        } as never
+        agent.model = authorModel
         agent.system = authorSystem
         agent.steps = 40
         agent.permissions = [{ action: "*", resource: "*", effect: "allow" }]
@@ -281,8 +297,10 @@ export const makePluginManager = (
       const session = await context.session.create({
         title: input.title,
         agent: "plugin-author",
+        model: authorModel,
         location: input.location,
       } as never) as unknown as { id: string }
+      await context.session.switchModel({ sessionID: session.id, model: authorModel } as never)
       workspaces.set(session.id, input.workspace)
       let prompt = input.prompt
       let summary = ""
@@ -290,7 +308,10 @@ export const makePluginManager = (
         for (let attempt = 0; attempt < 4; attempt++) {
           await context.session.prompt({ sessionID: session.id, text: prompt, resume: true } as never)
           await context.session.wait({ sessionID: session.id } as never)
-          summary = assistantText(await context.session.context({ sessionID: session.id } as never))
+          const sessionContext = await context.session.context({ sessionID: session.id } as never)
+          const failure = assistantFailure(sessionContext)
+          if (failure !== undefined) throw new Error(failure)
+          summary = assistantText(sessionContext)
           try {
             const plugin = await saveWorkspace(input.workspace, input.creating)
             return { plugin, summary }
