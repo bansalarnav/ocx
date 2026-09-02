@@ -34,11 +34,11 @@ describe("ocx", () => {
     const firstPath = join(root, "first.ts")
     const secondPath = join(root, "second.ts")
     await writeFile(loaderPath, ocxLoaderSource)
-    await writeFile(firstPath, `export default { id: "demo", setup() {
+    await writeFile(firstPath, `export default { id: "demo", tui(api) {
       globalThis.__ocxLoaderTest = "first"
-      return () => { globalThis.__ocxLoaderCleanup = true }
+      api.lifecycle.onDispose(() => { globalThis.__ocxLoaderCleanup = true })
     } }`)
-    await writeFile(secondPath, `export default { id: "demo", setup() {
+    await writeFile(secondPath, `export default { id: "demo", tui() {
       globalThis.__ocxLoaderTest = "second"
     } }`)
     await writeFile(join(control, "active.json"), JSON.stringify({
@@ -55,10 +55,20 @@ describe("ocx", () => {
     delete globalState.__ocxLoaderCleanup
     try {
       const definition = (await import(`${loaderPath}?test=${crypto.randomUUID()}`)).default
-      const cleanup = await definition.setup({
+      let cleanup: (() => Promise<void> | void) | undefined
+      await definition.tui({
         ui: {
-          dialog: { confirm: async () => true },
-          toast: { show: () => undefined },
+          dialog: { clear: () => undefined, replace: () => undefined },
+          DialogConfirm: () => undefined,
+          toast: () => undefined,
+        },
+        slots: { register: () => "test-slot" },
+        lifecycle: {
+          signal: new AbortController().signal,
+          onDispose: (value: () => Promise<void> | void) => {
+            cleanup = value
+            return () => undefined
+          },
         },
       })
       for (let attempt = 0; attempt < 20 && globalState.__ocxLoaderTest !== "first"; attempt++) {
