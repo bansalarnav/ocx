@@ -65,6 +65,8 @@ export default Plugin.define({
 
 The local TUI API includes \`ctx.ui\`, \`ctx.keymap\`, \`ctx.renderer\`, \`ctx.data\`, \`ctx.client\`, \`ctx.storage\`, themes, attention notifications, and Markdown renderers. The server bundles and stores \`tui.tsx\`. Connected \`ocx\` clients ask for local approval, verify the artifact, and load it. Later edits hot-reload on every connected and approving client. Return cleanup functions from registrations so the previous version can be removed cleanly.
 
+The supported UI slot paths are \`app\`, \`home.footer\`, \`prompt.footer\`, \`prompt.footer.status\`, \`prompt.footer.file\`, \`session.composer.top\`, \`sidebar.content\`, and \`sidebar.footer\`. Use only these exact strings. For content inside OpenCode's existing right sidebar, append to \`sidebar.content\`. There is no \`sidebar.right\` slot, and a slot claim cannot create a new top-level pane.
+
 ## Dependencies
 
 Use relative imports normally. Put external packages in \`package.json\`:
