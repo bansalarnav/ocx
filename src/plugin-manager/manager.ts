@@ -32,17 +32,6 @@ const authorModel = {
   id: "big-pickle",
 } as never
 
-const tuiSlots = new Set([
-  "app",
-  "home.footer",
-  "prompt.footer",
-  "prompt.footer.status",
-  "prompt.footer.file",
-  "session.composer.top",
-  "sidebar.content",
-  "sidebar.footer",
-])
-
 const objectInput = (
   properties: Record<string, unknown>,
   required: string[] = [],
@@ -135,12 +124,6 @@ const inspectPluginWorkspace = (workspace: PluginWorkspace) => {
     if (!source.includes("@opencode-ai/plugin/tui")) throw new Error("tui.tsx must import @opencode-ai/plugin/tui")
     if (!/export\s+default\s+Plugin\.define\s*\(/.test(source)) {
       throw new Error("tui.tsx must default-export Plugin.define(...)")
-    }
-    for (const match of source.matchAll(/\b(?:prepend|append|before|after|replace)\s*:\s*(["'])([^"']+)\1/g)) {
-      const slot = match[2]!
-      if (!tuiSlots.has(slot)) {
-        throw new Error(`Unknown TUI slot ${slot}. Use one of: ${[...tuiSlots].join(", ")}`)
-      }
     }
   }
 
