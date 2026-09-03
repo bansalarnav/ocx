@@ -27,10 +27,18 @@ const authorAllowedTools = new Set([
   "question",
 ])
 
-const authorModel = {
-  providerID: "opencode",
-  id: "big-pickle",
-} as never
+export interface SessionModel {
+  providerID: string
+  id: string
+  variant?: string
+}
+
+export const selectedSessionModel = (session: { model?: SessionModel }): SessionModel => {
+  if (session.model === undefined) {
+    throw new Error("The current chat has no selected model")
+  }
+  return session.model
+}
 
 const objectInput = (
   properties: Record<string, unknown>,
@@ -240,7 +248,6 @@ export const makePluginManager = (
         agent.description = "Edits a normal plugin project in a private virtual filesystem"
         agent.mode = "subagent"
         agent.hidden = true
-        agent.model = authorModel
         agent.system = authorSystem
         agent.steps = 40
         agent.permissions = [{ action: "*", resource: "*", effect: "allow" }]
@@ -301,14 +308,15 @@ export const makePluginManager = (
       workspace: PluginWorkspace
       location?: unknown
       creating: boolean
+      model: SessionModel
     }) => {
       const session = await context.session.create({
         title: input.title,
         agent: "plugin-author",
-        model: authorModel,
+        model: input.model,
         location: input.location,
       } as never) as unknown as { id: string }
-      await context.session.switchModel({ sessionID: session.id, model: authorModel } as never)
+      await context.session.switchModel({ sessionID: session.id, model: input.model } as never)
       workspaces.set(session.id, input.workspace)
       let prompt = input.prompt
       let summary = ""
@@ -433,13 +441,17 @@ export const makePluginManager = (
         input: objectInput({ prompt: { type: "string", description: "What the plugin should do" } }, ["prompt"]),
         options: { codemode: false },
         async execute(input: any, toolContext) {
-          const current = await context.session.get({ sessionID: toolContext.sessionID }) as unknown as { location?: unknown }
+          const current = await context.session.get({ sessionID: toolContext.sessionID }) as unknown as {
+            location?: unknown
+            model?: SessionModel
+          }
           const result = await runAuthor({
             prompt: input.prompt,
             title: `Create plugin: ${input.prompt.slice(0, 80)}`,
             workspace: { files: {} },
             location: current.location,
             creating: true,
+            model: selectedSessionModel(current),
           })
           return text({ ok: true, plugin: pluginView(result.plugin, registry.has(result.plugin.id)), author: result.summary })
         },
@@ -452,13 +464,17 @@ export const makePluginManager = (
         async execute(input: any, toolContext) {
           const existing = await store.get(validateID(input.id))
           if (existing === undefined) throw new Error(`Plugin not found: ${input.id}`)
-          const current = await context.session.get({ sessionID: toolContext.sessionID }) as unknown as { location?: unknown }
+          const current = await context.session.get({ sessionID: toolContext.sessionID }) as unknown as {
+            location?: unknown
+            model?: SessionModel
+          }
           const result = await runAuthor({
             prompt: input.prompt,
             title: `Edit plugin ${existing.id}: ${input.prompt.slice(0, 70)}`,
             workspace: { files: { ...existing.files }, expectedID: existing.id },
             location: current.location,
             creating: false,
+            model: selectedSessionModel(current),
           })
           return text({ ok: true, plugin: pluginView(result.plugin, registry.has(result.plugin.id)), author: result.summary })
         },
