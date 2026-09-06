@@ -2,7 +2,18 @@
 
 This Worker runs the full OpenCode v2 HTTP server inside one Cloudflare Durable Object. SQLite-backed state and durable events survive object eviction.
 
-Wrangler minifies the Worker for deployment. The current bundle is about 2.82 MiB compressed, below Cloudflare's 3 MiB free-plan limit.
+`ocx` connects through a hibernating WebSocket. The normal OpenCode CLI talks HTTP and SSE to a private loopback proxy; the wrapper carries requests and responses over that socket. OpenCode's client and server packages remain unchanged.
+
+The current Worker build is about 25.5 MiB uncompressed and 6.5 MiB compressed, including esbuild's Wasm binary for runtime plugin bundling. Cloudflare's [current Worker size limit](https://developers.cloudflare.com/workers/platform/limits/#worker-size) is 64 MiB uncompressed, with no compressed-size limit.
+
+## Repository layout
+
+- `packages/server`: Worker entry point, Durable Object transport, scoped OpenCode host, plugin registry and QuickJS bridge.
+- `packages/client`: Effect services for the WebSocket, loopback HTTP proxy, plugin cache, approvals and CLI process.
+- `packages/protocol`: shared Effect schemas, transport framing and manifest types.
+- `packages/device`: device MCP server and preview tools.
+
+Run `bun run typecheck` to check the packages and `bun run build` to bundle the Worker without deploying. The existing `test/` files are retained as historical coverage of the previous APIs; they have not been migrated or run during this rewrite.
 
 ## Run locally
 
@@ -15,7 +26,7 @@ Check the server:
 
 ```sh
 curl http://localhost:8787/api/health
-opencode2 --server http://localhost:8787
+bun run ocx --server http://localhost:8787
 ```
 
 The v2 preview CLI may be named `opencode` instead of `opencode2` in your installation.
@@ -38,11 +49,11 @@ bun run ocx --server http://localhost:8787 -- --log-level DEBUG
 
 The cache lives under `$XDG_DATA_HOME/ocx`, or `~/.local/share/ocx` when `XDG_DATA_HOME` is unset. Each server origin has a separate cache and approval file. A first install and every content change requires confirmation. `--yes` is available for trusted non-interactive use.
 
-`ocx` keeps an authenticated event stream open while the TUI runs. Publishing, editing, enabling, or disabling a TUI plugin notifies every connected `ocx` client. Each client shows its own approval dialog for new code, verifies and caches the artifact, then replaces the running plugin without restarting OpenCode. Starting with `--yes` also approves live updates automatically.
+`ocx` carries registry notifications over its authenticated WebSocket while the TUI runs. Publishing, editing, enabling, or disabling a TUI plugin notifies every connected `ocx` client. Each client shows its own approval dialog for new code, verifies and caches the artifact, then replaces the running plugin without restarting OpenCode. Starting with `--yes` also approves live updates automatically.
 
-Approved plugins are materialized in OpenCode's native local-plugin layout at `generated-config/plugins/<id>/index.ts` and `tui.tsx`. OpenCode watches those entrypoints and performs the hot reload itself. A small separate TUI plugin only presents approval dialogs for updates received while the client is running. Plugins must return cleanup functions so OpenCode can remove the previous version cleanly.
+Approved plugins are materialized in each client's disposable config directory at `plugins/<id>/index.ts` and `tui.tsx`. OpenCode watches those entrypoints and performs the hot reload itself. A small separate TUI plugin only presents approval dialogs for updates received while the client is running. Plugins must return cleanup functions so OpenCode can remove the previous version cleanly.
 
-The launcher reads the user's existing `tui.json` or `tui.jsonc`, but does not edit it. It passes the generated file through `OPENCODE_TUI_CONFIG` and uses a per-server `OPENCODE_CONFIG_DIR`, whose `plugins` directory OpenCode discovers automatically.
+The launcher reads the user's existing `tui.json` or `tui.jsonc`, but does not edit it. It passes the generated file through `OPENCODE_TUI_CONFIG` and uses a per-process `OPENCODE_CONFIG_DIR`, whose `plugins` directory OpenCode discovers automatically.
 
 ## Protect and deploy it
 
@@ -56,14 +67,14 @@ bun run deploy
 Connect with the same password:
 
 ```sh
-OPENCODE_PASSWORD=secret opencode2 --server https://opencode-durable-object.<subdomain>.workers.dev
+OPENCODE_PASSWORD=secret bun run ocx --server https://opencode-durable-object.<subdomain>.workers.dev
 ```
 
 Without the secret, the complete API is public and unauthenticated.
 
 ## Device tools over MCP
 
-The Durable Object disables OpenCode's built-in `read`, `glob`, `grep`, `write`, `edit`, `patch`, and `shell` tools. A small MCP server in `device/server.ts` provides replacements that operate on this machine. Create a persistent token once, then start the server:
+The Durable Object disables OpenCode's built-in `read`, `glob`, `grep`, `write`, `edit`, `patch`, and `shell` tools. A small MCP server in `packages/device/src/server.ts` provides replacements that operate on this machine. Create a persistent token once, then start the server:
 
 ```sh
 mkdir -p ~/.tnl
@@ -139,4 +150,16 @@ The Workerd profile exposes every HTTP route, but Cloudflare cannot provide its 
 
 The Worker uses OpenCode's bundled model catalog and disables its periodic models.dev refresh. Update the OpenCode dependency and redeploy to pick up new catalog metadata.
 
-An Effect `RcRef` owns the OpenCode host. Each request borrows it through an Effect `Scope`, so concurrent requests and open response streams share one host. Once the final response body finishes or is cancelled, closing its borrower scope makes `RcRef` finalize OpenCode and cancel its background timers. The Durable Object can then become idle. A later request rebuilds the host from durable SQLite state and reconnects the MCP server. An attached TUI keeps its event stream open, so the host stays active until that client disconnects.
+## Connection and host lifetime
+
+An Effect `RcRef` owns the OpenCode host. Each ordinary request borrows it until the response body ends or is cancelled. Before returning the lease, the wrapper waits for OpenCode's execution service to report that all active turns have settled. This includes asynchronous prompts, queued starts, permission waits, retries and subagents. Closing the last lease finalizes the host and cancels its background timers. The next request rebuilds the host from SQLite and reloads the stored plugins.
+
+The Durable Object accepts sockets with `acceptWebSocket`. Global events, plugin notifications and following session logs have subscription state in `serializeAttachment`, so they survive hibernation without an internal SSE reader. Session logs replay history through the normal finite HTTP route, then switch to live durable events after the replay watermark. Incoming messages wake the object. Client heartbeats use Cloudflare's automatic reply, which does not wake it. SSE heartbeat comments are generated locally for the CLI, between complete event frames.
+
+The local proxy listens only on `127.0.0.1`, on a random port, and requires a fresh password supplied to the child process. Remote credentials stay in the wrapper. Requests retain their methods, paths, query strings and end-to-end headers. Request and response bodies travel in 32 KiB chunks with acknowledgements and cancellation. Connection-specific headers are removed. The protocol limits concurrent requests and subscription buffers; slow subscribers fail and reconnect instead of accumulating an unlimited backlog.
+
+After a network disconnect, the wrapper reconnects its socket. It fails in-flight requests without replaying them, since a mutation may already have reached the server. OpenCode reconnects its event streams; durable session logs can resume from their sequence cursor. Plugin notifications trigger a fresh manifest fetch on every reconnect.
+
+Direct HTTP access remains available for tools such as `curl`. A client attached directly to the remote SSE endpoints still prevents hibernation. Use `ocx` for idle connections that can hibernate. Running model work and other active HTTP streams continue to keep the host alive.
+
+Typechecking, a Worker build and local HTTP/WebSocket checks do not verify Cloudflare eviction or billing. Confirm those against a deployed Worker with an idle attached client before relying on the expected savings.
