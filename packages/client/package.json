@@ -1,0 +1,19 @@
+{
+  "name": "@ocx/client",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "effect": "4.0.0-rc.112",
+    "jsonc-parser": "3.3.1",
+    "@opencode-ai/plugin": "0.0.0-beta-18866",
+    "@opentui/core": "0.5.9",
+    "@opentui/solid": "0.5.9",
+    "solid-js": "1.9.15",
+    "@ocx/protocol": "workspace:*",
+    "@effect/platform-node": "4.0.0-rc.112",
+    "ws": "8.21.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
+  }
+}

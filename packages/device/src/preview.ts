@@ -119,7 +119,9 @@ async function waitForPort(port: number, timeout: number, server?: ManagedProces
     if (server) {
       const exit = await Promise.race([server.closed, delay(100).then(() => undefined)])
       if (exit) {
-        throw new Error(`Preview command exited before opening port ${port}: ${server.output().trim() || JSON.stringify(exit)}`)
+        throw new Error(
+          `Preview command exited before opening port ${port}: ${server.output().trim() || JSON.stringify(exit)}`,
+        )
       }
     } else {
       await delay(100)
@@ -135,7 +137,9 @@ async function waitForTunnel(tunnel: ManagedProcess, timeout: number): Promise<s
     if (match?.[1]) return match[1]
     const exit = await Promise.race([tunnel.closed, delay(100).then(() => undefined)])
     if (exit) {
-      throw new Error(`tnlc exited before publishing a URL: ${tunnel.output().trim() || JSON.stringify(exit)}`)
+      throw new Error(
+        `tnlc exited before publishing a URL: ${tunnel.output().trim() || JSON.stringify(exit)}`,
+      )
     }
   }
   throw new Error(`Timed out waiting for tnlc: ${tunnel.output().trim()}`)
@@ -153,9 +157,13 @@ export class PreviewManager {
   async start(input: StartPreviewInput): Promise<PreviewInfo> {
     const id = randomBytes(8).toString("hex")
     const name = input.name ?? process.env.OPENCODE_PREVIEW_NAME ?? "opencode-preview"
-    const conflict = Array.from(this.previews.values()).find((preview) => preview.status === "running" && preview.name === name)
+    const conflict = Array.from(this.previews.values()).find(
+      (preview) => preview.status === "running" && preview.name === name,
+    )
     if (conflict) {
-      throw new Error(`Preview hostname ${name} is already in use by preview ${conflict.id}; stop it first or provide another name`)
+      throw new Error(
+        `Preview hostname ${name} is already in use by preview ${conflict.id}; stop it first or provide another name`,
+      )
     }
     let server: ManagedProcess | undefined
     let tunnel: ManagedProcess | undefined

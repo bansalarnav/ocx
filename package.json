@@ -3,33 +3,16 @@
   "private": true,
   "type": "module",
   "bin": {
-    "ocx": "bin/ocx.ts"
+    "ocx": "packages/client/src/main.ts"
   },
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "device": "bun device/server.ts",
-    "device:tunnel": "bash device/tunnel.sh",
-    "test": "bun test",
-    "ocx": "bun bin/ocx.ts",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.device.json && tsc -p tsconfig.ocx.json"
-  },
-  "dependencies": {
-    "@cloudflare/worker-bundler": "^0.2.3",
-    "@jitl/quickjs-wasmfile-release-sync": "0.32.0",
-    "@modelcontextprotocol/sdk": "1.29.0",
-    "@opencode-ai/core": "0.0.0-beta-18866",
-    "@opencode-ai/plugin": "0.0.0-beta-18866",
-    "@opencode-ai/server": "0.0.0-beta-18866",
-    "@opencode-ai/util": "0.0.0-beta-18866",
-    "@opentui/core": "0.5.9",
-    "@opentui/solid": "0.5.9",
-    "effect": "4.0.0-rc.112",
-    "express": "5.2.1",
-    "jsonc-parser": "3.3.1",
-    "quickjs-emscripten-core": "0.32.0",
-    "solid-js": "1.9.15",
-    "zod": "4.1.8"
+    "device": "bun packages/device/src/server.ts",
+    "device:tunnel": "bash packages/device/tunnel.sh",
+    "ocx": "bun packages/client/src/main.ts",
+    "typecheck": "tsc -p packages/server && tsc -p packages/client && tsc -p packages/device",
+    "build": "wrangler deploy --dry-run --outdir dist/worker"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "latest",
@@ -37,5 +20,8 @@
     "@types/node": "24.12.2",
     "typescript": "latest",
     "wrangler": "latest"
-  }
+  },
+  "workspaces": [
+    "packages/*"
+  ]
 }

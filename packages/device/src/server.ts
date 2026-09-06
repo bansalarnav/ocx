@@ -118,9 +118,8 @@ async function run(
       child.kill("SIGTERM")
     }
 
-    const timer = options.timeout && options.timeout > 0
-      ? setTimeout(terminate, options.timeout)
-      : undefined
+    const timer =
+      options.timeout && options.timeout > 0 ? setTimeout(terminate, options.timeout) : undefined
     const abort = () => terminate()
     options.signal?.addEventListener("abort", abort, { once: true })
 
@@ -148,11 +147,23 @@ function createMcpServer(): McpServer {
   server.registerTool(
     "read",
     {
-      description: "Read a file or directory in the local workspace. Text lines are prefixed with 1-based line numbers.",
+      description:
+        "Read a file or directory in the local workspace. Text lines are prefixed with 1-based line numbers.",
       inputSchema: {
         path: z.string().describe("File or directory to read"),
-        offset: z.number().int().positive().optional().describe("First line or entry to read, starting at 1"),
-        limit: z.number().int().positive().max(10_000).optional().describe("Maximum lines or entries, default 2000"),
+        offset: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("First line or entry to read, starting at 1"),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .max(10_000)
+          .optional()
+          .describe("Maximum lines or entries, default 2000"),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -170,10 +181,14 @@ function createMcpServer(): McpServer {
 
       if (!stat.isFile()) throw new Error(`Not a regular file: ${input}`)
       const bytes = await fs.readFile(target)
-      if (bytes.includes(0)) throw new Error(`Binary files are not supported by device_read yet: ${input}`)
+      if (bytes.includes(0))
+        throw new Error(`Binary files are not supported by device_read yet: ${input}`)
       const lines = bytes.toString("utf8").split(/\r?\n/)
       const page = lines.slice(offset - 1, offset - 1 + limit)
-      const suffix = offset - 1 + page.length < lines.length ? "\n\n(Output truncated. Read again with a larger offset.)" : ""
+      const suffix =
+        offset - 1 + page.length < lines.length
+          ? "\n\n(Output truncated. Read again with a larger offset.)"
+          : ""
       return textResult(page.map((line, index) => `${offset + index}: ${line}`).join("\n") + suffix)
     },
   )
@@ -185,18 +200,29 @@ function createMcpServer(): McpServer {
       inputSchema: {
         pattern: z.string().min(1).describe("Glob pattern, for example **/*.ts"),
         path: z.string().optional().describe("Directory to search, relative to the workspace"),
-        limit: z.number().int().positive().max(10_000).optional().describe("Maximum results, default 100"),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .max(10_000)
+          .optional()
+          .describe("Maximum results, default 100"),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async ({ pattern, path: input = ".", limit = 100 }, extra) => {
       const target = await assertExistingPath(input)
-      const result = await run("rg", ["--files", "--hidden", "--glob", "!.git", "--glob", pattern], {
-        cwd: target,
-        timeout: 30_000,
-        signal: extra.signal,
-      })
-      if (result.code !== 0 && result.code !== 1) throw new Error(result.stderr || `rg exited with ${result.code}`)
+      const result = await run(
+        "rg",
+        ["--files", "--hidden", "--glob", "!.git", "--glob", pattern],
+        {
+          cwd: target,
+          timeout: 30_000,
+          signal: extra.signal,
+        },
+      )
+      if (result.code !== 0 && result.code !== 1)
+        throw new Error(result.stderr || `rg exited with ${result.code}`)
       const entries = result.stdout.trim().split("\n").filter(Boolean).slice(0, limit)
       return textResult(entries.map((entry) => relative(path.join(target, entry))).join("\n"))
     },
@@ -210,19 +236,39 @@ function createMcpServer(): McpServer {
         pattern: z.string().describe("Regular expression in ripgrep syntax"),
         path: z.string().optional().describe("File or directory to search"),
         include: z.string().optional().describe("Optional glob used to filter files"),
-        limit: z.number().int().positive().max(10_000).optional().describe("Maximum matching lines, default 100"),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .max(10_000)
+          .optional()
+          .describe("Maximum matching lines, default 100"),
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async ({ pattern, path: input = ".", include, limit = 100 }, extra) => {
       const target = await assertExistingPath(input)
-      const args = ["--line-number", "--column", "--no-heading", "--color", "never", "--hidden", "--glob", "!.git"]
+      const args = [
+        "--line-number",
+        "--column",
+        "--no-heading",
+        "--color",
+        "never",
+        "--hidden",
+        "--glob",
+        "!.git",
+      ]
       if (include) args.push("--glob", include)
       args.push("--", pattern, target)
       const result = await run("rg", args, { timeout: 30_000, signal: extra.signal })
-      if (result.code !== 0 && result.code !== 1) throw new Error(result.stderr || `rg exited with ${result.code}`)
+      if (result.code !== 0 && result.code !== 1)
+        throw new Error(result.stderr || `rg exited with ${result.code}`)
       const lines = result.stdout.trim().split("\n").filter(Boolean).slice(0, limit)
-      return textResult(lines.map((line) => line.startsWith(root) ? line.slice(root.length + 1) : line).join("\n"))
+      return textResult(
+        lines
+          .map((line) => (line.startsWith(root) ? line.slice(root.length + 1) : line))
+          .join("\n"),
+      )
     },
   )
 
@@ -247,7 +293,8 @@ function createMcpServer(): McpServer {
   server.registerTool(
     "edit",
     {
-      description: "Edit a UTF-8 file by replacing exact text. The match must be unique unless replaceAll is true.",
+      description:
+        "Edit a UTF-8 file by replacing exact text. The match must be unique unless replaceAll is true.",
       inputSchema: {
         path: z.string().describe("File to edit"),
         oldString: z.string().describe("Exact text to find"),
@@ -263,10 +310,15 @@ function createMcpServer(): McpServer {
       const original = await fs.readFile(target, "utf8")
       const occurrences = original.split(oldString).length - 1
       if (occurrences === 0) throw new Error(`Could not find oldString in ${input}`)
-      if (occurrences > 1 && !replaceAll) throw new Error(`Found ${occurrences} matches; provide more context or set replaceAll`)
-      const updated = replaceAll ? original.replaceAll(oldString, newString) : original.replace(oldString, newString)
+      if (occurrences > 1 && !replaceAll)
+        throw new Error(`Found ${occurrences} matches; provide more context or set replaceAll`)
+      const updated = replaceAll
+        ? original.replaceAll(oldString, newString)
+        : original.replace(oldString, newString)
       await fs.writeFile(target, updated, "utf8")
-      return textResult(`Edited ${relative(target)} (${replaceAll ? occurrences : 1} replacement${occurrences === 1 ? "" : "s"})`)
+      return textResult(
+        `Edited ${relative(target)} (${replaceAll ? occurrences : 1} replacement${occurrences === 1 ? "" : "s"})`,
+      )
     },
   )
 
@@ -290,11 +342,19 @@ function createMcpServer(): McpServer {
       > = []
 
       for (const hunk of parsed.success) {
-        const target = hunk.type === "add"
-          ? await assertWritablePath(hunk.path)
-          : await assertExistingPath(hunk.path)
+        const target =
+          hunk.type === "add"
+            ? await assertWritablePath(hunk.path)
+            : await assertExistingPath(hunk.path)
         if (hunk.type === "add") {
-          prepared.push({ type: "add", target, content: hunk.contents.endsWith("\n") || hunk.contents === "" ? hunk.contents : `${hunk.contents}\n` })
+          prepared.push({
+            type: "add",
+            target,
+            content:
+              hunk.contents.endsWith("\n") || hunk.contents === ""
+                ? hunk.contents
+                : `${hunk.contents}\n`,
+          })
         } else if (hunk.type === "delete") {
           prepared.push({ type: "delete", target })
         } else {
@@ -314,19 +374,23 @@ function createMcpServer(): McpServer {
           await fs.unlink(change.target)
           continue
         }
-        const destination = change.type === "update" && change.moveTarget ? change.moveTarget : change.target
+        const destination =
+          change.type === "update" && change.moveTarget ? change.moveTarget : change.target
         await fs.mkdir(path.dirname(destination), { recursive: true })
         await fs.writeFile(destination, change.content, "utf8")
         if (change.type === "update" && change.moveTarget) await fs.unlink(change.target)
       }
 
-      return textResult([
-        "Success. Updated the following files:",
-        ...prepared.map((change) => {
-          const target = change.type === "update" && change.moveTarget ? change.moveTarget : change.target
-          return `${change.type === "add" ? "A" : change.type === "delete" ? "D" : "M"} ${relative(target)}`
-        }),
-      ].join("\n"))
+      return textResult(
+        [
+          "Success. Updated the following files:",
+          ...prepared.map((change) => {
+            const target =
+              change.type === "update" && change.moveTarget ? change.moveTarget : change.target
+            return `${change.type === "add" ? "A" : change.type === "delete" ? "D" : "M"} ${relative(target)}`
+          }),
+        ].join("\n"),
+      )
     },
   )
 
@@ -337,7 +401,13 @@ function createMcpServer(): McpServer {
       inputSchema: {
         command: z.string().min(1).describe("Shell command"),
         workdir: z.string().optional().describe("Working directory inside the workspace"),
-        timeout: z.number().int().min(0).max(1_800_000).optional().describe("Timeout in milliseconds, default 120000"),
+        timeout: z
+          .number()
+          .int()
+          .min(0)
+          .max(1_800_000)
+          .optional()
+          .describe("Timeout in milliseconds, default 120000"),
       },
       annotations: { destructiveHint: true, openWorldHint: true },
     },
@@ -349,32 +419,63 @@ function createMcpServer(): McpServer {
         signal: extra.signal,
       })
       const output = [result.stdout, result.stderr].filter(Boolean).join("\n").trimEnd()
-      return textResult(`${output}${output ? "\n\n" : ""}Process exited with code ${result.code ?? result.signal ?? "unknown"}.`)
+      return textResult(
+        `${output}${output ? "\n\n" : ""}Process exited with code ${result.code ?? result.signal ?? "unknown"}.`,
+      )
     },
   )
 
   server.registerTool(
     "preview_start",
     {
-      description: "Start or attach to a local web server and expose it at a PUBLIC HTTPS preview URL through tnl. The URL has no preview-level authentication; never expose secrets or privileged development endpoints.",
+      description:
+        "Start or attach to a local web server and expose it at a PUBLIC HTTPS preview URL through tnl. The URL has no preview-level authentication; never expose secrets or privileged development endpoints.",
       inputSchema: {
-        port: z.number().int().min(1).max(65_535).describe("Local TCP port the web server listens on"),
-        command: z.string().min(1).optional().describe("Optional shell command to start the web server. Omit it to expose a server already listening on the port"),
-        workdir: z.string().optional().describe("Working directory inside the workspace, default workspace root"),
-        name: z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/).optional().describe("Optional tnl subdomain name. Defaults to the reusable opencode-preview hostname"),
-        startupTimeout: z.number().int().min(1_000).max(120_000).optional().describe("Milliseconds to wait for the port and tunnel, default 30000"),
+        port: z
+          .number()
+          .int()
+          .min(1)
+          .max(65_535)
+          .describe("Local TCP port the web server listens on"),
+        command: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            "Optional shell command to start the web server. Omit it to expose a server already listening on the port",
+          ),
+        workdir: z
+          .string()
+          .optional()
+          .describe("Working directory inside the workspace, default workspace root"),
+        name: z
+          .string()
+          .regex(/^[a-z0-9][a-z0-9-]{0,62}$/)
+          .optional()
+          .describe(
+            "Optional tnl subdomain name. Defaults to the reusable opencode-preview hostname",
+          ),
+        startupTimeout: z
+          .number()
+          .int()
+          .min(1_000)
+          .max(120_000)
+          .optional()
+          .describe("Milliseconds to wait for the port and tunnel, default 30000"),
       },
       annotations: { destructiveHint: true, openWorldHint: true },
     },
     async ({ port, command, workdir = ".", name, startupTimeout = 30_000 }) => {
       const cwd = await assertExistingPath(workdir)
       const preview = await previews.start({ port, command, workdir: cwd, name, startupTimeout })
-      return textResult([
-        `Preview: ${preview.url}`,
-        `ID: ${preview.id}`,
-        `Local port: ${preview.port}`,
-        "Warning: this URL is public and has no preview-level authentication.",
-      ].join("\n"))
+      return textResult(
+        [
+          `Preview: ${preview.url}`,
+          `ID: ${preview.id}`,
+          `Local port: ${preview.port}`,
+          "Warning: this URL is public and has no preview-level authentication.",
+        ].join("\n"),
+      )
     },
   )
 
@@ -394,7 +495,8 @@ function createMcpServer(): McpServer {
   server.registerTool(
     "preview_stop",
     {
-      description: "Stop a public preview tunnel and the web server command that preview_start launched for it.",
+      description:
+        "Stop a public preview tunnel and the web server command that preview_start launched for it.",
       inputSchema: {
         id: z.string().min(1).describe("Preview ID returned by preview_start or preview_list"),
       },
