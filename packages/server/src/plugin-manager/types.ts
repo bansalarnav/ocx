@@ -9,10 +9,3 @@ export interface StoredPlugin {
   updatedAt: number
   error?: string
 }
-
-export interface PluginStore {
-  list(): Promise<StoredPlugin[]>
-  get(id: string): Promise<StoredPlugin | undefined>
-  put(plugin: StoredPlugin): Promise<void>
-  remove(id: string): Promise<void>
-}

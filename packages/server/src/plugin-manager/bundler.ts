@@ -1,3 +1,6 @@
+import { createWorker } from "@cloudflare/worker-bundler"
+import { Effect } from "effect"
+import { attempt, evaluate } from "@ocx/protocol/errors"
 const serverPluginVirtualModule = `export const Plugin = { define(plugin) { return plugin } }`
 
 export interface PluginBundles {
@@ -16,11 +19,17 @@ const dependenciesFrom = (files: Record<string, string>): Record<string, string>
   try {
     manifest = JSON.parse(source)
   } catch (error) {
-    throw new Error(`Invalid package.json: ${error instanceof Error ? error.message : String(error)}`)
+    throw new Error(
+      `Invalid package.json: ${error instanceof Error ? error.message : String(error)}`,
+    )
   }
   const value = manifest as { dependencies?: unknown }
   if (value.dependencies === undefined) return {}
-  if (!value.dependencies || typeof value.dependencies !== "object" || Array.isArray(value.dependencies)) {
+  if (
+    !value.dependencies ||
+    typeof value.dependencies !== "object" ||
+    Array.isArray(value.dependencies)
+  ) {
     throw new Error("package.json dependencies must be an object")
   }
   const entries = Object.entries(value.dependencies as Record<string, unknown>)
@@ -54,89 +63,74 @@ const checkBundleSize = (name: string, source: string) => {
   if (bytes > 8 * 1024 * 1024) throw new Error(`${name} bundle exceeds 8 MiB`)
 }
 
-const bundleCache = new Map<string, Promise<PluginBundles>>()
-
-const cacheKey = async (files: Record<string, string>) => {
-  const serialized = JSON.stringify(Object.entries(files).sort(([left], [right]) => left.localeCompare(right)))
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(serialized))
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")
-}
-
-const bundle = async (
+export const bundlePluginFiles = Effect.fn("bundlePluginFiles")(function* (
   files: Record<string, string>,
-): Promise<PluginBundles> => {
-  const dependencies = dependenciesFrom(files)
+) {
+  const dependencies = yield* evaluate("Parse dependencies", () => dependenciesFrom(files))
   const syntheticFiles = {
     ...files,
     "package.json": JSON.stringify({ private: true, dependencies }),
   }
-  const { createWorker } = await import("@cloudflare/worker-bundler")
   const warnings: string[] = []
   let serverBundle: string | undefined
   let tuiBundle: string | undefined
-  const serverEntry = files["server.ts"] !== undefined ? "server.ts"
-    : files["server.js"] !== undefined ? "server.js"
-    : undefined
+  const serverEntry =
+    files["server.ts"] !== undefined
+      ? "server.ts"
+      : files["server.js"] !== undefined
+        ? "server.js"
+        : undefined
 
   if (serverEntry !== undefined) {
-    const result = await createWorker({
-      files: syntheticFiles,
-      entryPoint: serverEntry,
-      bundle: true,
-      minify: false,
-      sourcemap: false,
-      target: "es2022",
-      conditions: ["workerd", "worker", "browser", "import", "default"],
-      virtualModules: { "@opencode-ai/plugin": serverPluginVirtualModule },
-      define: { "process.env.NODE_ENV": '"production"' },
-    })
-    serverBundle = moduleSource(result.mainModule, result.modules)
-    checkBundleSize(serverEntry, serverBundle)
+    const result = yield* attempt("Bundle plugin", () =>
+      createWorker({
+        files: syntheticFiles,
+        entryPoint: serverEntry,
+        bundle: true,
+        minify: false,
+        sourcemap: false,
+        target: "es2022",
+        conditions: ["workerd", "worker", "browser", "import", "default"],
+        virtualModules: { "@opencode-ai/plugin": serverPluginVirtualModule },
+        define: { "process.env.NODE_ENV": '"production"' },
+      }),
+    )
+    serverBundle = yield* evaluate("Read bundle", () =>
+      moduleSource(result.mainModule, result.modules),
+    )
+    yield* evaluate("Check bundle size", () => checkBundleSize(serverEntry, serverBundle!))
     warnings.push(...(result.warnings ?? []).map((warning) => `${serverEntry}: ${warning}`))
   }
 
   if (files["tui.tsx"] !== undefined) {
-    const result = await createWorker({
-      files: syntheticFiles,
-      entryPoint: "tui.tsx",
-      bundle: true,
-      minify: false,
-      sourcemap: false,
-      target: "es2022",
-      jsx: "automatic",
-      jsxImportSource: "@opentui/solid",
-      conditions: ["browser", "import", "default"],
-      externals: [
-        "@opencode-ai/plugin/tui",
-        "@opentui/core",
-        "@opentui/solid",
-        "@opentui/solid/*",
-        "solid-js",
-        "solid-js/*",
-      ],
-      define: { "process.env.NODE_ENV": '"production"' },
-    })
-    tuiBundle = moduleSource(result.mainModule, result.modules)
-    checkBundleSize("tui.tsx", tuiBundle)
+    const result = yield* attempt("Bundle plugin", () =>
+      createWorker({
+        files: syntheticFiles,
+        entryPoint: "tui.tsx",
+        bundle: true,
+        minify: false,
+        sourcemap: false,
+        target: "es2022",
+        jsx: "automatic",
+        jsxImportSource: "@opentui/solid",
+        conditions: ["browser", "import", "default"],
+        externals: [
+          "@opencode-ai/plugin/tui",
+          "@opentui/core",
+          "@opentui/solid",
+          "@opentui/solid/*",
+          "solid-js",
+          "solid-js/*",
+        ],
+        define: { "process.env.NODE_ENV": '"production"' },
+      }),
+    )
+    tuiBundle = yield* evaluate("Read bundle", () =>
+      moduleSource(result.mainModule, result.modules),
+    )
+    yield* evaluate("Check bundle size", () => checkBundleSize("tui.tsx", tuiBundle!))
     warnings.push(...(result.warnings ?? []).map((warning) => `tui.tsx: ${warning}`))
   }
 
   return { serverBundle, tuiBundle, dependencies, warnings }
-}
-
-export const bundlePluginFiles = async (
-  files: Record<string, string>,
-): Promise<PluginBundles> => {
-  const key = await cacheKey(files)
-  const cached = bundleCache.get(key)
-  if (cached !== undefined) return cached
-  const pending = bundle(files)
-  bundleCache.set(key, pending)
-  if (bundleCache.size > 16) bundleCache.delete(bundleCache.keys().next().value!)
-  try {
-    return await pending
-  } catch (error) {
-    bundleCache.delete(key)
-    throw error
-  }
-}
+})
