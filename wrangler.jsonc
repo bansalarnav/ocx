@@ -4,16 +4,11 @@
   "main": "packages/server/src/index.ts",
   "minify": true,
   "compatibility_date": "2026-08-26",
-  "compatibility_flags": [
-    "nodejs_compat",
-    "experimental"
-  ],
+  "compatibility_flags": ["nodejs_compat"],
   "rules": [
     {
       "type": "CompiledWasm",
-      "globs": [
-        "**/*.wasm"
-      ],
+      "globs": ["**/*.wasm"],
       "fallthrough": true
     }
   ],
@@ -22,31 +17,13 @@
       {
         "name": "OPENCODE",
         "class_name": "OpenCodeDO"
-      },
-      {
-        "name": "COMPUTERS",
-        "class_name": "RemoteComputer"
-      },
-      {
-        "name": "WORKSPACES",
-        "class_name": "WorkspaceCatalog"
       }
     ]
   },
   "migrations": [
     {
       "tag": "v1",
-      "new_sqlite_classes": [
-        "OpenCodeDO"
-      ]
-    },
-    {
-      "tag": "v2",
-      "new_sqlite_classes": [
-        "RemoteComputer",
-        "WorkspaceCatalog"
-      ]
+      "new_sqlite_classes": ["OpenCodeDO"]
     }
-  ],
-  "worker_loaders": [{ "binding": "LOADER" }]
+  ]
 }

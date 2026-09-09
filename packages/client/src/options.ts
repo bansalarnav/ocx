@@ -1,9 +1,9 @@
-import { workspaceID } from "@ocx/protocol/workspaces"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 
 export interface Options {
-  workspace?: string
+  shareDevice: boolean
+  deviceRoot: string
   origin: string
   binary: string
   dataRoot: string
@@ -14,10 +14,11 @@ export interface Options {
 export const usage = `Usage: ocx [options] <server-url> [-- opencode2 arguments]
 
 Options:
-  --server <url>       OpenCode server URL (alternative to the positional URL)
-  --workspace <id>    Attach to a remote workspace
-  --binary <path>      CLI to launch (default: opencode2)
-  --data-dir <path>    Cache root (default: $XDG_DATA_HOME/ocx or ~/.local/share/ocx)
+  --server <url>        OpenCode server URL (alternative to the positional URL)
+  --share-device       Share local files and shell through a OpenTunnel
+  --device-root <path>  Directory to share (default: current directory)
+  --binary <path>       CLI to launch (default: opencode2)
+  --data-dir <path>     Cache root (default: $XDG_DATA_HOME/ocx or ~/.local/share/ocx)
   --yes                Approve new or changed plugin bytes without prompting
   -h, --help           Show this help
 
@@ -44,7 +45,8 @@ const normalizeOrigin = (value: string): string => {
 }
 
 export const parseArguments = (args: string[], env = process.env): Options => {
-  let workspace: string | undefined
+  let shareDevice = false
+  let deviceRoot: string | undefined
   let server: string | undefined
   let binary = env.OCX_OPENCODE_BINARY || "opencode2"
   let dataRoot =
@@ -58,15 +60,24 @@ export const parseArguments = (args: string[], env = process.env): Options => {
       childArgs.push(...args.slice(index + 1))
       break
     }
+    if (arg === "--share-device") {
+      shareDevice = true
+      continue
+    }
+    if (arg === "--device-root") {
+      const value = args[++index]
+      if (!value || value.startsWith("--")) fail(`${arg} requires a value`)
+      deviceRoot = resolve(value)
+      continue
+    }
     if (arg === "--yes") {
       yes = true
       continue
     }
-    if (arg === "--workspace" || arg === "--server" || arg === "--binary" || arg === "--data-dir") {
+    if (arg === "--server" || arg === "--binary" || arg === "--data-dir") {
       const value = args[++index]
       if (!value) fail(`${arg} requires a value`)
-      if (arg === "--workspace") workspace = workspaceID(value)
-      else if (arg === "--server") server = value
+      if (arg === "--server") server = value
       else if (arg === "--binary") binary = value
       else dataRoot = resolve(value)
       continue
@@ -76,6 +87,7 @@ export const parseArguments = (args: string[], env = process.env): Options => {
     server = arg
   }
 
+  if (deviceRoot && !shareDevice) fail("--device-root requires --share-device")
   if (!server) throw new Error("Missing server URL\n\n" + usage)
-  return { workspace, origin: normalizeOrigin(server), binary, dataRoot, yes, childArgs }
+  return { shareDevice, deviceRoot: deviceRoot ?? process.cwd(), origin: normalizeOrigin(server), binary, dataRoot, yes, childArgs }
 }

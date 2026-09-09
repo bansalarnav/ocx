@@ -1,0 +1,22 @@
+{
+  "name": "@opentunnel/client",
+  "version": "0.0.0",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/promise/index.ts",
+    "./promise": "./src/promise/index.ts",
+    "./effect": "./src/effect/index.ts"
+  },
+  "dependencies": {
+    "@opentunnel/protocol": "workspace:*",
+    "@peculiar/x509": "2.0.0",
+    "effect": "4.0.0-beta.42",
+    "reflect-metadata": "0.2.2",
+    "ws": "8.20.0"
+  },
+  "private": true,
+  "devDependencies": {
+    "@types/ws": "8.18.1"
+  }
+}

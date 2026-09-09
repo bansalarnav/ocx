@@ -1,3 +1,4 @@
+import { deviceHeader, deviceProtocol, type SharedDevice } from "@ocx/protocol/device"
 import { Context, Deferred, Effect, Layer, Queue, Schedule, Scope } from "effect"
 import WebSocket from "ws"
 import {
@@ -42,7 +43,7 @@ export class Transport extends Context.Service<
 
 const failure = (message: string, cause?: unknown) => new TransportError({ message, cause })
 
-export const transportLayer = (origin: string, password?: string, workspace?: string) =>
+export const transportLayer = (origin: string, password?: string, device?: SharedDevice) =>
   Layer.effect(
     Transport,
     Effect.gen(function* () {
@@ -176,17 +177,15 @@ export const transportLayer = (origin: string, password?: string, workspace?: st
       const connection = Effect.scoped(
         Effect.gen(function* () {
           const url = new URL(socketPath, origin)
-          if (workspace) url.searchParams.set("workspace", workspace)
           url.protocol = url.protocol === "https:" ? "wss:" : "ws:"
           const ws = yield* Effect.acquireRelease(
             Effect.sync(
               () =>
-                new WebSocket(url, protocol, {
-                  headers: password
-                    ? {
-                        authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`,
-                      }
-                    : {},
+                new WebSocket(url, device ? deviceProtocol : protocol, {
+                  headers: {
+                    ...(password ? { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}` } : {}),
+                    ...(device ? { [deviceHeader]: JSON.stringify(device) } : {}),
+                  },
                   handshakeTimeout: 10_000,
                   maxPayload: maxFrameBytes,
                 }),
@@ -205,6 +204,11 @@ export const transportLayer = (origin: string, password?: string, workspace?: st
           )
           yield* Effect.callback<void, TransportError>((resume) => {
             ws.on("open", () => {
+              if (device && ws.protocol !== deviceProtocol) {
+                resume(Effect.fail(failure("Server does not support device sharing; deploy the updated Worker")))
+                ws.terminate()
+                return
+              }
               socket = ws
               lastPong = Date.now()
               Effect.runSync(Deferred.succeed(ready, ws))

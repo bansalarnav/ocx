@@ -7,6 +7,7 @@
     "express": "5.2.1",
     "@modelcontextprotocol/sdk": "1.29.0",
     "zod": "4.1.8",
-    "@opencode-ai/util": "0.0.0-beta-18866"
+    "@opencode-ai/util": "0.0.0-beta-18866",
+    "@opentunnel/client": "workspace:*"
   }
 }

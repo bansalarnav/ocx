@@ -1,21 +1,7 @@
+import { launchTunnel, waitForTunnel, stopTunnel } from "./tunnel.js"
+import { startProcess, terminateProcess, type ManagedProcess, type ProcessExit } from "./process.js"
 import { randomBytes } from "node:crypto"
-import { type ChildProcessByStdio, spawn } from "node:child_process"
 import { connect } from "node:net"
-import type { Readable } from "node:stream"
-
-const MAX_LOG_BYTES = 128 * 1024
-
-type ProcessExit = {
-  code: number | null
-  signal: NodeJS.Signals | null
-  error?: string
-}
-
-type ManagedProcess = {
-  child: ChildProcessByStdio<null, Readable, Readable>
-  closed: Promise<ProcessExit>
-  output: () => string
-}
 
 export type PreviewInfo = {
   id: string
@@ -40,57 +26,6 @@ export type StartPreviewInput = {
   workdir: string
   name?: string
   startupTimeout: number
-}
-
-function childEnvironment(): NodeJS.ProcessEnv {
-  const environment = { ...process.env }
-  delete environment.OPENCODE_DEVICE_TOKEN
-  return environment
-}
-
-function startProcess(command: string, args: string[], cwd: string): ManagedProcess {
-  const child = spawn(command, args, {
-    cwd,
-    env: childEnvironment(),
-    detached: process.platform !== "win32",
-    stdio: ["ignore", "pipe", "pipe"],
-  })
-  let output = ""
-
-  const append = (chunk: Buffer) => {
-    output += chunk.toString("utf8")
-    if (Buffer.byteLength(output) > MAX_LOG_BYTES) {
-      output = output.slice(-MAX_LOG_BYTES)
-    }
-  }
-  child.stdout.on("data", append)
-  child.stderr.on("data", append)
-
-  const closed = new Promise<ProcessExit>((resolve) => {
-    let settled = false
-    const finish = (exit: ProcessExit) => {
-      if (settled) return
-      settled = true
-      resolve(exit)
-    }
-    child.once("error", (error) => finish({ code: null, signal: null, error: error.message }))
-    child.once("close", (code, signal) => finish({ code, signal }))
-  })
-
-  return { child, closed, output: () => output }
-}
-
-function terminateProcess(process: ManagedProcess | undefined): void {
-  if (!process || process.child.exitCode !== null || process.child.signalCode !== null) return
-  if (process.child.pid && globalThis.process.platform !== "win32") {
-    try {
-      globalThis.process.kill(-process.child.pid, "SIGTERM")
-      return
-    } catch {
-      // Fall through and terminate only the direct child.
-    }
-  }
-  process.child.kill("SIGTERM")
 }
 
 function portIsOpen(port: number): Promise<boolean> {
@@ -130,21 +65,6 @@ async function waitForPort(port: number, timeout: number, server?: ManagedProces
   throw new Error(`Timed out waiting for 127.0.0.1:${port}`)
 }
 
-async function waitForTunnel(tunnel: ManagedProcess, timeout: number): Promise<string> {
-  const deadline = Date.now() + timeout
-  while (Date.now() < deadline) {
-    const match = tunnel.output().match(/(https:\/\/[a-z0-9-]+\.trycloudflare\.com)\b/i)
-    if (match?.[1]) return match[1]
-    const exit = await Promise.race([tunnel.closed, delay(100).then(() => undefined)])
-    if (exit) {
-      throw new Error(
-        `cloudflared exited before publishing a URL: ${tunnel.output().trim() || JSON.stringify(exit)}`,
-      )
-    }
-  }
-  throw new Error(`Timed out waiting for cloudflared: ${tunnel.output().trim()}`)
-}
-
 function exitMessage(label: string, exit: ProcessExit, output: string): string {
   const reason = exit.error ?? exit.signal ?? `code ${exit.code ?? "unknown"}`
   const logs = output.trim()
@@ -174,7 +94,7 @@ export class PreviewManager {
       }
       await waitForPort(input.port, input.startupTimeout, server)
 
-      tunnel = startProcess("cloudflared", ["tunnel", "--no-autoupdate", "--url", `http://127.0.0.1:${input.port}`], input.workdir)
+      tunnel = launchTunnel(input.port, input.workdir)
       const url = await waitForTunnel(tunnel, input.startupTimeout)
       const preview: Preview = {
         id,
@@ -192,7 +112,7 @@ export class PreviewManager {
       this.watch(preview)
       return this.info(preview)
     } catch (error) {
-      terminateProcess(tunnel)
+      await stopTunnel(tunnel)
       terminateProcess(server)
       throw error
     }
@@ -206,7 +126,7 @@ export class PreviewManager {
     const preview = this.previews.get(id)
     if (!preview) throw new Error(`Preview not found: ${id}`)
     preview.status = "stopping"
-    terminateProcess(preview.tunnel)
+    void stopTunnel(preview.tunnel)
     terminateProcess(preview.server)
     this.previews.delete(id)
     return this.info(preview)
@@ -215,7 +135,7 @@ export class PreviewManager {
   stopAll(): void {
     for (const preview of this.previews.values()) {
       preview.status = "stopping"
-      terminateProcess(preview.tunnel)
+      void stopTunnel(preview.tunnel)
       terminateProcess(preview.server)
     }
     this.previews.clear()
@@ -230,7 +150,7 @@ export class PreviewManager {
     void preview.tunnel.closed.then((exit) => {
       if (preview.status !== "running") return
       preview.status = "failed"
-      preview.error = exitMessage("cloudflared", exit, preview.tunnel.output())
+      preview.error = exitMessage("OpenTunnel", exit, preview.tunnel.output())
       terminateProcess(preview.server)
     })
     if (preview.server) {
@@ -238,7 +158,7 @@ export class PreviewManager {
         if (preview.status !== "running") return
         preview.status = "failed"
         preview.error = exitMessage("Preview command", exit, preview.server?.output() ?? "")
-        terminateProcess(preview.tunnel)
+        void stopTunnel(preview.tunnel)
       })
     }
   }

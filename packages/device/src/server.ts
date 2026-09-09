@@ -21,8 +21,9 @@ if (!configuredToken) {
 }
 const token = configuredToken
 const previews = new PreviewManager()
+const activeCommands = new Set<(signal?: NodeJS.Signals) => void>()
 
-if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
+if (!Number.isSafeInteger(port) || port < 0 || port > 65535) {
   throw new Error(`Invalid OPENCODE_DEVICE_PORT: ${process.env.OPENCODE_DEVICE_PORT}`)
 }
 
@@ -79,6 +80,7 @@ async function run(
   return new Promise((resolve, reject) => {
     const childEnvironment = { ...process.env }
     delete childEnvironment.OPENCODE_DEVICE_TOKEN
+    delete childEnvironment.OPENCODE_PASSWORD
     const child = spawn(command, args, {
       cwd: options.cwd ?? root,
       env: childEnvironment,
@@ -106,24 +108,26 @@ async function run(
     child.stderr.on("data", (chunk: Buffer) => collect(stderr, chunk))
     child.once("error", reject)
 
-    const terminate = () => {
+    const terminate = (signal: NodeJS.Signals = "SIGTERM") => {
       if (child.pid && process.platform !== "win32") {
         try {
-          process.kill(-child.pid, "SIGTERM")
+          process.kill(-child.pid, signal)
           return
         } catch {
           // Fall through to killing the child itself.
         }
       }
-      child.kill("SIGTERM")
+      child.kill(signal)
     }
 
+    activeCommands.add(terminate)
     const timer =
       options.timeout && options.timeout > 0 ? setTimeout(terminate, options.timeout) : undefined
     const abort = () => terminate()
     options.signal?.addEventListener("abort", abort, { once: true })
 
     child.once("close", (code, signal) => {
+      activeCommands.delete(terminate)
       if (timer) clearTimeout(timer)
       options.signal?.removeEventListener("abort", abort)
       resolve({
@@ -429,7 +433,7 @@ function createMcpServer(): McpServer {
     "preview_start",
     {
       description:
-        "Start or attach to a local web server and expose it at a PUBLIC HTTPS preview URL through Cloudflare Tunnel. The URL has no preview-level authentication; never expose secrets or privileged development endpoints.",
+        "Start or attach to a local web server and expose it at a PUBLIC HTTPS preview URL through OpenTunnel. The URL has no preview-level authentication; never expose secrets or privileged development endpoints.",
       inputSchema: {
         port: z
           .number()
@@ -453,19 +457,19 @@ function createMcpServer(): McpServer {
           .regex(/^[a-z0-9][a-z0-9-]{0,62}$/)
           .optional()
           .describe(
-            "Optional local preview label. Defaults to opencode-preview; Cloudflare assigns a random hostname",
+            "Optional local preview label. Defaults to opencode-preview; OpenTunnel assigns a hostname",
           ),
         startupTimeout: z
           .number()
           .int()
           .min(1_000)
-          .max(120_000)
+          .max(600_000)
           .optional()
-          .describe("Milliseconds to wait for the port and tunnel, default 30000"),
+          .describe("Milliseconds to wait for the port and tunnel certificate, default 300000"),
       },
       annotations: { destructiveHint: true, openWorldHint: true },
     },
-    async ({ port, command, workdir = ".", name, startupTimeout = 30_000 }) => {
+    async ({ port, command, workdir = ".", name, startupTimeout = 300_000 }) => {
       const cwd = await assertExistingPath(workdir)
       const preview = await previews.start({ port, command, workdir: cwd, name, startupTimeout })
       return textResult(
@@ -568,13 +572,21 @@ app.all("/mcp", (_request, response) => {
 
 const http = createServer(app)
 http.listen(port, host, () => {
-  console.log(`OpenCode device MCP listening on http://${host}:${port}/mcp`)
+  const address = http.address()
+  if (!address || typeof address === "string") throw new Error("Missing device listen address")
+  console.log(`OpenCode device MCP listening on http://${host}:${address.port}/mcp`)
   console.log(`Workspace root: ${root}`)
 })
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {
+    for (const terminate of activeCommands) terminate()
     previews.stopAll()
-    http.close(() => process.exit(0))
+    // Give running commands a chance to stop, then kill those that ignore SIGTERM.
+    setTimeout(() => {
+      for (const terminate of activeCommands) terminate("SIGKILL")
+      process.exit(0)
+    }, 1500)
+    http.close()
   })
 }

@@ -1,3 +1,5 @@
+import { devicePrefix } from "@ocx/protocol/device"
+
 export interface DeviceMcpEnv {
   DEVICE_MCP_SERVERS?: string
   DEVICE_MCP_URL?: string
@@ -25,6 +27,7 @@ export interface RemoteMcpServer {
 const validDeviceName = /^[a-z][a-z0-9_]{0,31}$/
 
 function parseDefinition(name: string, input: unknown): DeviceDefinition {
+  if (name.startsWith(devicePrefix)) throw new Error(`Device names beginning with ${devicePrefix} are reserved for ocx`)
   if (!validDeviceName.test(name)) {
     throw new Error(
       `Invalid device name ${JSON.stringify(name)}. Use 1-32 lowercase letters, numbers, or underscores.`,

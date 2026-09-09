@@ -9,7 +9,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "device": "bun packages/device/src/server.ts",
-    "device:tunnel": "bash packages/device/tunnel.sh",
+    "device:tunnel": "bun packages/device/src/tunnel-main.ts",
     "ocx": "bun packages/client/src/main.ts",
     "typecheck": "tsc -p packages/server && tsc -p packages/client && tsc -p packages/device",
     "build": "wrangler deploy --dry-run --outdir dist/worker"
@@ -23,6 +23,7 @@
     "wrangler": "latest"
   },
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "vendor/opentunnel/*"
   ]
 }

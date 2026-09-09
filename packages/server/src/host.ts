@@ -1,3 +1,5 @@
+import { Mcp } from "@opencode-ai/core/mcp/index"
+import type { SharedDevices } from "./shared-devices"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { Bus } from "@opencode-ai/core/bus"
 import { SdkPlugins } from "@opencode-ai/core/plugin/sdk"
@@ -12,9 +14,6 @@ import { makePluginManager } from "./plugin-manager/manager"
 import { PluginStore } from "./plugin-manager/store"
 import { makeLivePluginRegistry } from "./plugin-manager/registry"
 import { makeQuickJSPlugin } from "./plugin-manager/quickjs"
-import type { RemoteComputer } from "./remote/computer"
-import { remoteServices } from "./remote/services"
-import { remoteTools } from "./remote/tools"
 import { finalizeWithResponse } from "./response-lifecycle"
 
 export interface HostEnv extends DeviceMcpEnv {
@@ -35,13 +34,7 @@ const deviceToolsOnly = define({
     }),
 })
 
-export interface RemoteHost {
-  computer: () => DurableObjectStub<RemoteComputer>
-  attached: () => boolean
-  git: (operation: "fetch" | "push", branch?: string) => Promise<unknown>
-}
-
-export const hostLayer = (storage: DurableObjectStorage, env: HostEnv, observe: Bus.Subscriber, remote?: RemoteHost) =>
+export const hostLayer = (storage: DurableObjectStorage, env: HostEnv, observe: Bus.Subscriber, devices?: SharedDevices) =>
   Layer.effect(
     Host,
     Effect.gen(function* () {
@@ -55,7 +48,7 @@ export const hostLayer = (storage: DurableObjectStorage, env: HostEnv, observe: 
             }),
           ),
         )
-        const registry = makeLivePluginRegistry([deviceToolsOnly, ...(remote ? [remoteTools(remote.computer, remote.git)] : [])])
+        const registry = makeLivePluginRegistry([deviceToolsOnly])
         yield* registry.upsert(makePluginManager(store, registry))
         for (const plugin of yield* store.list) {
           if (
@@ -92,9 +85,9 @@ export const hostLayer = (storage: DurableObjectStorage, env: HostEnv, observe: 
         const handler = yield* ServerFetch.make(ServerWorkerd.serverOptions(options), {
           overrides: [
             ...ServerWorkerd.replacements(options),
-            ...(remote ? remoteServices(remote.computer, storage, remote.attached) : []),
             SdkPlugins.node.replace(sdk),
             SessionExecution.node.replace(executionNode),
+            ...(devices ? [Mcp.node.replace(devices.node)] : []),
           ],
         })
         if (!execution) return yield* Effect.die("OpenCode execution service was not initialized")

@@ -1,4 +1,4 @@
-import { workspaceHeader } from "@ocx/protocol/workspaces"
+import { deviceHeader, deviceProtocol, parseSharedDevice, type SharedDevice } from "@ocx/protocol/device"
 import { Schema } from "effect"
 import { SessionEvent } from "@opencode-ai/schema/session-event"
 import type { Bus } from "@opencode-ai/core/bus"
@@ -42,6 +42,7 @@ interface Attachment {
   version: 1
   origin: string
   authorization: string | null
+  device?: SharedDevice
   subscriptions: Subscription[]
 }
 interface Exchange {
@@ -66,19 +67,22 @@ export class SocketTransport {
   constructor(
     private readonly state: DurableObjectState,
     private readonly handle: (request: Request) => Promise<Response>,
+    private readonly devicesChanged: () => void = () => {},
   ) {
     state.setWebSocketAutoResponse(new WebSocketRequestResponsePair(ping, pong))
   }
 
   accept(request: Request): Response {
-    if (
-      !request.headers
-        .get("sec-websocket-protocol")
-        ?.split(",")
-        .map((x) => x.trim())
-        .includes(protocol)
-    ) {
+    const protocols = request.headers.get("sec-websocket-protocol")?.split(",").map(value => value.trim()) ?? []
+    const selectedProtocol = request.headers.has(deviceHeader) ? deviceProtocol : protocol
+    if (!protocols.includes(selectedProtocol)) {
       return new Response("Unsupported transport version", { status: 426 })
+    }
+    let device: SharedDevice | undefined
+    const registration = request.headers.get(deviceHeader)
+    if (registration) {
+      try { device = parseSharedDevice(registration) }
+      catch { return new Response("Invalid shared device registration", { status: 400 }) }
     }
     const pair = new WebSocketPair()
     this.state.acceptWebSocket(pair[1])
@@ -87,11 +91,22 @@ export class SocketTransport {
       origin: new URL(request.url).origin,
       authorization: request.headers.get("authorization"),
       subscriptions: [],
+      device,
     })
+    if (device) {
+      // A reconnect replaces its previous socket, including one whose close has not arrived.
+      for (const socket of this.state.getWebSockets()) {
+        if (socket !== pair[1] && attachment(socket).device?.id === device.id) {
+          this.close(socket)
+          socket.close(1000, "Device reconnected")
+        }
+      }
+      this.devicesChanged()
+    }
     return new Response(null, {
       status: 101,
       webSocket: pair[0],
-      headers: { "sec-websocket-protocol": protocol },
+      headers: { "sec-websocket-protocol": selectedProtocol },
     })
   }
 
@@ -328,7 +343,7 @@ export class SocketTransport {
       requests.set(frame.id, exchange)
       const headers = new Headers(frame.headers as [string, string][])
       headers.delete("host")
-      headers.delete(workspaceHeader)
+      headers.delete(deviceHeader)
       const authorization = attachment(socket).authorization
       if (authorization) headers.set("authorization", authorization)
       else headers.delete("authorization")
@@ -430,7 +445,20 @@ export class SocketTransport {
     })
   }
 
+  devices(): SharedDevice[] {
+    return this.state.getWebSockets().flatMap(socket => {
+      const device = attachment(socket).device
+      return socket.readyState === WebSocket.OPEN && device ? [device] : []
+    })
+  }
+
   close(socket: WebSocket): void {
+    const stored = attachment(socket)
+    if (stored.device) {
+      delete stored.device
+      save(socket, stored)
+      this.devicesChanged()
+    }
     for (const exchange of this.exchanges.get(socket)?.values() ?? []) exchange.abort.abort()
     this.exchanges.delete(socket)
   }
