@@ -27,9 +27,7 @@ bun run deploy
 Copy the HTTPS Worker URL printed by Wrangler, then connect using the same password:
 
 ```sh
-export OCX_SERVER_URL='https://opencode-durable-object.<subdomain>.workers.dev'
-
-bun run ocx --server "$OCX_SERVER_URL" --password 'your-server-password'
+bun run ocx --server "https://opencode-durable-object.<subdomain>.workers.dev" --password 'your-server-password'
 ```
 
 The Worker returns HTTP 503 until its password is configured, and 401 for missing or incorrect credentials. `OPENCODE_PASSWORD` remains available as a fallback when `--password` is omitted. A command-line password may be saved in shell history or briefly visible to other processes on the same machine.
@@ -41,7 +39,6 @@ In the TUI, use `/connect` to configure a model provider.
 ```sh
 bun run ocx --server "$OCX_SERVER_URL" --password 'your-server-password'
 bun run ocx --server "$OCX_SERVER_URL" --password 'your-server-password' --binary opencode
-bun run ocx --server "$OCX_SERVER_URL" --password 'your-server-password' -- --log-level DEBUG
 ```
 
 `ocx` asks before installing server-authored TUI plugins and before accepting changed plugin code. `--yes` approves those changes automatically, including live updates. The launcher uses a disposable config and leaves your existing OpenCode config untouched. See [plugin loading and approvals](docs/tui-plugins.md).
