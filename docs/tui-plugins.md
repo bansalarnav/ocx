@@ -5,7 +5,7 @@
 From this checkout:
 
 ```sh
-OPENCODE_PASSWORD=secret bun run ocx --server https://opencode-durable-object.<subdomain>.workers.dev
+bun run ocx --server https://opencode-durable-object.<subdomain>.workers.dev --password secret
 ```
 
 Use `--binary opencode` if the preview executable on your machine has that name. Put options for OpenCode after `--`:
@@ -21,4 +21,3 @@ The cache lives under `$XDG_DATA_HOME/ocx`, or `~/.local/share/ocx` when `XDG_DA
 Approved plugins are materialized in each client's disposable config directory at `plugins/<id>/index.ts` and `tui.tsx`. OpenCode watches those entrypoints and performs the hot reload itself. A small separate TUI plugin only presents approval dialogs for updates received while the client is running. Plugins must return cleanup functions so OpenCode can remove the previous version cleanly.
 
 The launcher reads the user's existing `tui.json` or `tui.jsonc`, but does not edit it. It passes the generated file through `OPENCODE_TUI_CONFIG` and uses a per-process `OPENCODE_CONFIG_DIR`, whose `plugins` directory OpenCode discovers automatically.
-

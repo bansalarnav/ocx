@@ -30,7 +30,7 @@ const main = Effect.gen(function* () {
   const device = sharing ? yield* attempt("Start shared device", signal => sharing.start(options.deviceRoot, signal)) : undefined
   if (device) yield* Effect.sync(() => console.error("Device ready. Access lasts while ocx is connected."))
   const connect = Effect.gen(function* () {
-    const transport = transportLayer(options.origin, process.env.OPENCODE_PASSWORD, device)
+    const transport = transportLayer(options.origin, options.password, device)
     const services = Layer.mergeAll(
       Proxy.layer.pipe(Layer.provide(transport)),
       pluginsLayer(options).pipe(Layer.provide(Layer.merge(transport, Files.layer))),

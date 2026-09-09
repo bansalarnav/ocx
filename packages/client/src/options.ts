@@ -5,6 +5,7 @@ export interface Options {
   shareDevice: boolean
   deviceRoot: string
   origin: string
+  password?: string
   binary: string
   dataRoot: string
   yes: boolean
@@ -15,14 +16,15 @@ export const usage = `Usage: ocx [options] <server-url> [-- opencode2 arguments]
 
 Options:
   --server <url>        OpenCode server URL (alternative to the positional URL)
-  --share-device       Share local files and shell through a OpenTunnel
+  --password <value>    Server password (default: OPENCODE_PASSWORD)
+  --share-device        Share local files and shell through OpenTunnel
   --device-root <path>  Directory to share (default: current directory)
   --binary <path>       CLI to launch (default: opencode2)
   --data-dir <path>     Cache root (default: $XDG_DATA_HOME/ocx or ~/.local/share/ocx)
   --yes                Approve new or changed plugin bytes without prompting
   -h, --help           Show this help
 
-Remote authentication uses OPENCODE_PASSWORD. The local proxy uses a per-process password.`
+The local proxy uses a separate per-process password.`
 
 const fail = (message: string): never => {
   throw new Error(message)
@@ -48,6 +50,7 @@ export const parseArguments = (args: string[], env = process.env): Options => {
   let shareDevice = false
   let deviceRoot: string | undefined
   let server: string | undefined
+  let password = env.OPENCODE_PASSWORD
   let binary = env.OCX_OPENCODE_BINARY || "opencode2"
   let dataRoot =
     env.OCX_DATA_HOME || join(env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "ocx")
@@ -74,10 +77,11 @@ export const parseArguments = (args: string[], env = process.env): Options => {
       yes = true
       continue
     }
-    if (arg === "--server" || arg === "--binary" || arg === "--data-dir") {
+    if (arg === "--server" || arg === "--password" || arg === "--binary" || arg === "--data-dir") {
       const value = args[++index]
       if (!value) fail(`${arg} requires a value`)
       if (arg === "--server") server = value
+      else if (arg === "--password") password = value
       else if (arg === "--binary") binary = value
       else dataRoot = resolve(value)
       continue
@@ -89,5 +93,5 @@ export const parseArguments = (args: string[], env = process.env): Options => {
 
   if (deviceRoot && !shareDevice) fail("--device-root requires --share-device")
   if (!server) throw new Error("Missing server URL\n\n" + usage)
-  return { shareDevice, deviceRoot: deviceRoot ?? process.cwd(), origin: normalizeOrigin(server), binary, dataRoot, yes, childArgs }
+  return { shareDevice, deviceRoot: deviceRoot ?? process.cwd(), origin: normalizeOrigin(server), password, binary, dataRoot, yes, childArgs }
 }
