@@ -20,7 +20,7 @@ export class OpenCodeDO extends DurableObject<Env> {
   constructor(state: DurableObjectState, env: Env) {
     super(state, env)
     const devices = new SharedDevices(() => this.transport.devices())
-    this.transport = new SocketTransport(state, (request) => this.fetch(request), () => devices.changed())
+    this.transport = new SocketTransport(state, () => devices.changed())
     const events = makeTuiRegistryEvents(() =>
       this.transport.publish("plugins", "event: changed\ndata: 0\n\n"),
     )

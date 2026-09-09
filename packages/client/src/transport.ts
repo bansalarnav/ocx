@@ -1,369 +1,268 @@
 import { deviceHeader, deviceProtocol, type SharedDevice } from "@ocx/protocol/device"
-import { Context, Deferred, Effect, Layer, Queue, Schedule, Scope } from "effect"
+import { Context, Deferred, Effect, Layer, Schedule } from "effect"
 import WebSocket from "ws"
 import {
-  chunkSize,
-  decodeBytes,
-  decodeServer,
-  encodeBytes,
-  maxFrameBytes,
-  maxRequests,
-  ping,
-  pong,
-  protocol,
-  socketPath,
-  TransportError,
-  wireHeaders,
-  type ClientFrame,
-  type ServerFrame,
+  decodeServer, maxBufferedBytes, maxFrameBytes, maxSubscriptions, ping, pong, protocol,
+  socketPath, subscriptionTarget, TransportError, wireHeaders,
+  type ClientFrame, type EventFrame, type ServerFrame,
 } from "@ocx/protocol/transport"
+import { replayCursor } from "./log-replay"
 
-interface BodyChunk {
-  bytes: Uint8Array
-  acknowledge: boolean
-}
-
-interface Pending {
-  response: Deferred.Deferred<Response, TransportError>
-  uploadCredit: Deferred.Deferred<void, TransportError>
-  body: Queue.Queue<BodyChunk, TransportError | import("effect/Cause").Done>
-  ended: boolean
-  sse: boolean
-  trailingNewlines: number
-  completed: Deferred.Deferred<void>
+interface Subscription {
+  ready: Deferred.Deferred<void, TransportError>
+  controller: ReadableStreamDefaultController<EventFrame>
+  abort: AbortController
+  socket: WebSocket
   cleanup: () => void
 }
 
 export class Transport extends Context.Service<
   Transport,
-  {
-    readonly fetch: (request: Request) => Effect.Effect<Response, TransportError>
-  }
+  { readonly fetch: (request: Request) => Effect.Effect<Response, TransportError> }
 >()("ocx/Transport") {}
 
 const failure = (message: string, cause?: unknown) => new TransportError({ message, cause })
+const encoder = new TextEncoder()
+const sseHeaders = { "content-type": "text/event-stream", "cache-control": "no-cache, no-transform" }
 
 export const transportLayer = (origin: string, password?: string, device?: SharedDevice) =>
-  Layer.effect(
-    Transport,
-    Effect.gen(function* () {
-      const scope = yield* Scope.Scope
-      const pending = new Map<string, Pending>()
-      let lastPong = 0
-      let socket: WebSocket | undefined
-      let ready = Deferred.makeUnsafe<WebSocket, TransportError>()
+  Layer.effect(Transport, Effect.gen(function* () {
+    const subscriptions = new Map<string, Subscription>()
+    const authorization = password ? `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}` : undefined
+    let socket: WebSocket | undefined
+    let ready = Deferred.makeUnsafe<WebSocket, TransportError>()
+    let lastPong = 0
 
-      const send = (frame: ClientFrame) =>
-        Effect.try({
-          try: () => {
-            if (socket?.readyState !== WebSocket.OPEN) throw failure("Transport disconnected")
-            socket.send(JSON.stringify(frame))
+    const send = (ws: WebSocket, frame: ClientFrame) => {
+      if (ws.readyState !== WebSocket.OPEN) throw failure("Event socket disconnected")
+      if (ws.bufferedAmount > maxBufferedBytes) throw failure("Event socket send buffer full")
+      ws.send(JSON.stringify(frame))
+    }
+    const stop = (id: string, error = failure("Subscription cancelled"), notify = true, abort = true) => {
+      const item = subscriptions.get(id)
+      if (!item) return
+      subscriptions.delete(id)
+      item.cleanup()
+      if (abort) item.abort.abort(error)
+      Effect.runSync(Deferred.fail(item.ready, error))
+      try { item.controller.error(error) } catch {}
+      if (notify) {
+        try { send(item.socket, { type: "unsubscribe", id }) }
+        catch { item.socket.terminate() }
+      }
+    }
+    const failSubscriptions = (error: TransportError) => {
+      for (const id of subscriptions.keys()) stop(id, error, false)
+    }
+    const receive = (frame: ServerFrame) => {
+      const item = subscriptions.get(frame.id)
+      if (!item) return
+      if (frame.type === "subscribed") {
+        Effect.runSync(Deferred.succeed(item.ready, undefined))
+      } else if (frame.type === "error") {
+        stop(frame.id, failure(frame.message))
+      } else {
+        const bytes = encoder.encode(frame.data).byteLength
+        if (bytes > (item.controller.desiredSize ?? 0)) {
+          stop(frame.id, failure("Event buffer overflow; reconnect to resync"))
+          return
+        }
+        item.controller.enqueue(frame)
+      }
+    }
+
+    const connection = Effect.scoped(Effect.gen(function* () {
+      const url = new URL(socketPath, origin)
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:"
+      const selectedProtocol = device ? deviceProtocol : protocol
+      const ws = yield* Effect.acquireRelease(
+        Effect.sync(() => new WebSocket(url, selectedProtocol, {
+          headers: {
+            ...(authorization ? { authorization } : {}),
+            ...(device ? { [deviceHeader]: JSON.stringify(device) } : {}),
           },
-          catch: (cause) => failure("Could not send transport frame", cause),
-        })
-      const failPending = (error: TransportError) =>
-        Effect.gen(function* () {
-          for (const item of pending.values()) {
-            yield* Deferred.fail(item.response, error)
-            yield* Deferred.fail(item.uploadCredit, error)
-            yield* Queue.fail(item.body, error)
-            yield* Deferred.succeed(item.completed, undefined)
-            item.cleanup()
+          handshakeTimeout: 10_000,
+          maxPayload: maxFrameBytes,
+        })),
+        ws => Effect.sync(() => {
+          ws.removeAllListeners()
+          ws.on("error", () => {})
+          ws.terminate()
+        }),
+      )
+      yield* Effect.callback<void, TransportError>(resume => {
+        ws.on("open", () => {
+          if (ws.protocol !== selectedProtocol) {
+            resume(Effect.fail(failure("Event protocol mismatch; update ocx and the Worker together")))
+            return
           }
-          pending.clear()
+          socket = ws
+          lastPong = Date.now()
+          Effect.runSync(Deferred.succeed(ready, ws))
         })
-      const receive = (frame: ServerFrame) =>
-        Effect.gen(function* () {
-          const item = pending.get(frame.id)
-          if (!item) return
-          switch (frame.type) {
-            case "response": {
-              const noBody = [101, 204, 205, 304].includes(frame.status)
-              item.sse =
-                new Headers(frame.headers as [string, string][])
-                  .get("content-type")
-                  ?.startsWith("text/event-stream") ?? false
-              const stream = new ReadableStream<Uint8Array>(
-                {
-                  pull(controller) {
-                    return Effect.runPromise(
-                      Queue.take(item.body).pipe(
-                        Effect.matchCauseEffect({
-                          onSuccess: ({ bytes, acknowledge }) =>
-                            Effect.sync(() => controller.enqueue(new Uint8Array(bytes))).pipe(
-                              Effect.andThen(
-                                acknowledge ? send({ type: "ack", id: frame.id }) : Effect.void,
-                              ),
-                            ),
-                          onFailure: (cause) =>
-                            Effect.sync(() => {
-                              if (item.ended) controller.close()
-                              else controller.error(failure("Response stream failed", cause))
-                            }),
-                        }),
-                        Effect.catch((error) => Effect.sync(() => controller.error(error))),
-                      ),
-                    )
-                  },
-                  cancel() {
-                    pending.delete(frame.id)
-                    item.cleanup()
-                    return Effect.runPromise(
-                      send({ type: "cancel", id: frame.id }).pipe(
-                        Effect.ignore,
-                        Effect.andThen(Deferred.succeed(item.completed, undefined)),
-                        Effect.andThen(Queue.shutdown(item.body)),
-                        Effect.asVoid,
-                      ),
-                    )
-                  },
-                },
-                { highWaterMark: 0 },
-              )
-              const response = yield* Effect.try({
-                try: () =>
-                  new Response(noBody ? null : stream, {
-                    status: frame.status,
-                    statusText: frame.statusText,
-                    headers: frame.headers as [string, string][],
-                  }),
-                catch: (cause) => failure("Invalid response", cause),
-              })
-              yield* Deferred.succeed(item.response, response)
-              return
-            }
-            case "chunk": {
-              const bytes = yield* Effect.try({
-                try: () => decodeBytes(frame.data),
-                catch: (cause) => failure("Invalid response chunk", cause),
-              })
-              if (item.sse) {
-                for (const byte of bytes) {
-                  if (byte !== 13)
-                    item.trailingNewlines = byte === 10 ? Math.min(2, item.trailingNewlines + 1) : 0
-                }
-              }
-              if (!Queue.offerUnsafe(item.body, { bytes, acknowledge: true })) {
-                yield* Queue.fail(item.body, failure("Response buffer overflow"))
-                pending.delete(frame.id)
-                yield* Deferred.succeed(item.completed, undefined)
-                item.cleanup()
-                yield* send({ type: "cancel", id: frame.id })
-              }
-              return
-            }
-            case "ack":
-              yield* Deferred.succeed(item.uploadCredit, undefined)
-              return
-            case "end":
-              item.ended = true
-              yield* Queue.end(item.body)
-              pending.delete(frame.id)
-              yield* Deferred.succeed(item.completed, undefined)
-              item.cleanup()
-              return
-            case "error": {
-              const error = failure(frame.message)
-              yield* Deferred.fail(item.response, error)
-              yield* Deferred.fail(item.uploadCredit, error)
-              yield* Queue.fail(item.body, error)
-              pending.delete(frame.id)
-              yield* Deferred.succeed(item.completed, undefined)
-              item.cleanup()
-            }
+        // Process in wire order; no detached per-message fibers or acknowledgements.
+        ws.on("message", (data, binary) => {
+          try {
+            if (binary) throw new Error("Expected a text event frame")
+            const text = data.toString()
+            if (text === pong) { lastPong = Date.now(); return }
+            receive(decodeServer(text))
+          } catch (cause) {
+            resume(Effect.fail(failure("Invalid event frame", cause)))
           }
         })
+        ws.on("error", cause => resume(Effect.fail(failure(
+          `Event WebSocket connection failed: ${cause.message}; check credentials and update ocx/Worker together`, cause,
+        ))))
+        ws.on("close", () => resume(Effect.fail(failure("Event WebSocket disconnected"))))
+      })
+    })).pipe(Effect.ensuring(Effect.sync(() => {
+      socket = undefined
+      const error = failure("Event socket disconnected; resubscribe to resume")
+      Effect.runSync(Deferred.fail(ready, error))
+      ready = Deferred.makeUnsafe()
+      failSubscriptions(error)
+    })))
+    yield* connection.pipe(
+      Effect.tapError(error => Effect.logWarning(error.message)),
+      Effect.retry(Schedule.spaced("1 second")),
+      Effect.forkScoped,
+    )
+    yield* Effect.sync(() => {
+      if (socket?.readyState !== WebSocket.OPEN) return
+      if (Date.now() - lastPong > 60_000) socket.terminate()
+      else socket.send(ping)
+    }).pipe(Effect.repeat(Schedule.spaced("30 seconds")), Effect.forkScoped)
+    // The TUI sees SSE heartbeats locally. They never cross the remote socket.
+    yield* Effect.sync(() => {
+      for (const [id, item] of subscriptions) {
+        if (item.controller.desiredSize === maxBufferedBytes) {
+          item.controller.enqueue({ type: "event", id, data: ": heartbeat\n\n" })
+        }
+      }
+    }).pipe(Effect.repeat(Schedule.spaced("15 seconds")), Effect.forkScoped)
+    yield* Effect.addFinalizer(() => Effect.sync(() => failSubscriptions(failure("Client shutting down"))))
 
-      const connection = Effect.scoped(
-        Effect.gen(function* () {
-          const url = new URL(socketPath, origin)
-          url.protocol = url.protocol === "https:" ? "wss:" : "ws:"
-          const ws = yield* Effect.acquireRelease(
-            Effect.sync(
-              () =>
-                new WebSocket(url, device ? deviceProtocol : protocol, {
-                  headers: {
-                    ...(password ? { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}` } : {}),
-                    ...(device ? { [deviceHeader]: JSON.stringify(device) } : {}),
-                  },
-                  handshakeTimeout: 10_000,
-                  maxPayload: maxFrameBytes,
-                }),
-            ),
-            (ws) =>
-              Effect.callback<void>((resume) => {
-                if (ws.readyState === WebSocket.CLOSED) {
-                  resume(Effect.void)
+    const waitReady = () => Deferred.await(ready).pipe(
+      Effect.timeout("15 seconds"),
+      Effect.mapError(cause => failure("Event transport unavailable; check Worker/client versions and credentials", cause)),
+    )
+    const http = (request: Request, path?: string, abort?: AbortSignal) => Effect.tryPromise({
+      try: async signal => {
+        const local = new URL(path ?? request.url, origin)
+        // Assign the path rather than resolving it against the origin: //host must remain a path.
+        const url = new URL(origin)
+        url.pathname = local.pathname
+        url.search = local.search
+        const headers = new Headers(wireHeaders(request.headers))
+        headers.delete("host")
+        headers.delete("authorization")
+        headers.delete(deviceHeader)
+        if (authorization) headers.set("authorization", authorization)
+        headers.set("accept-encoding", "identity")
+        const init: RequestInit & { duplex: "half" } = {
+          method: request.method, headers, body: request.body, duplex: "half",
+          signal: AbortSignal.any([request.signal, signal, ...(abort ? [abort] : [])]),
+          redirect: "manual",
+        }
+        const response = await fetch(url, init)
+        const outgoing = new Headers(wireHeaders(response.headers))
+        // Fetch decodes compressed bodies. Forward the decoded representation with fresh framing.
+        outgoing.delete("content-encoding")
+        outgoing.delete("content-length")
+        return new Response(response.body, { status: response.status, statusText: response.statusText, headers: outgoing })
+      },
+      catch: cause => failure("Remote HTTP request failed", cause),
+    })
+
+    return Transport.of({
+      fetch: Effect.fn("Transport.fetch")(function* (request: Request) {
+        const url = new URL(request.url)
+        const target = request.method === "GET" && !request.body
+          ? subscriptionTarget(url.pathname + url.search) : undefined
+        if (!target) {
+          // Register shared devices before the first HTTP call can start a host or model turn.
+          if (device) yield* waitReady()
+          return yield* http(request)
+        }
+        const ws = yield* waitReady()
+        if (ws !== socket || ws.readyState !== WebSocket.OPEN) return yield* Effect.fail(failure("Event socket disconnected"))
+        if (subscriptions.size >= maxSubscriptions) return yield* Effect.fail(failure("Too many subscriptions"))
+        const id = crypto.randomUUID()
+        let controller!: ReadableStreamDefaultController<EventFrame>
+        const events = new ReadableStream<EventFrame>({
+          start(value) { controller = value },
+          cancel() { stop(id) },
+        }, { highWaterMark: maxBufferedBytes, size: frame => Math.max(1, encoder.encode(frame.data).byteLength) })
+        const item: Subscription = { ready: Deferred.makeUnsafe(), controller, abort: new AbortController(), socket: ws, cleanup: () => {} }
+        const cancel = () => stop(id)
+        item.cleanup = () => request.signal.removeEventListener("abort", cancel)
+        subscriptions.set(id, item)
+        request.signal.addEventListener("abort", cancel, { once: true })
+
+        return yield* Effect.gen(function* () {
+          if (request.signal.aborted) return yield* Effect.fail(failure("Request cancelled"))
+          yield* Effect.try({
+            try: () => send(ws, target.channel === "log"
+              ? { type: "subscribe", id, channel: "log", sessionID: target.sessionID }
+              : { type: "subscribe", id, channel: target.channel }),
+            catch: cause => failure("Could not subscribe", cause),
+          })
+          yield* Deferred.await(item.ready).pipe(Effect.timeout("15 seconds"), Effect.mapError(cause => failure("Subscription unavailable", cause)))
+          // Subscription is installed before the snapshot request, so events during replay are queued.
+          const replay = target.channel === "log" ? yield* http(request, target.replayPath, item.abort.signal) : undefined
+          if (replay && !replay.ok) {
+            // Keep the HTTP error body readable after removing the unused live subscription.
+            stop(id, undefined, true, false)
+            return replay
+          }
+          const history = replay?.body?.getReader()
+          const cursor = replay ? replayCursor() : undefined
+          const live = events.getReader()
+          let through: number | undefined
+          let replaying = !!cursor
+          const stream = new ReadableStream<Uint8Array>({
+            async pull(output) {
+              try {
+                if (replaying) {
+                  const next = await history?.read()
+                  if (next && !next.done) {
+                    cursor!.write(next.value)
+                    output.enqueue(next.value)
+                    return
+                  }
+                  through = cursor!.finish()
+                  replaying = false
+                }
+                while (true) {
+                  const next = await live.read()
+                  if (next.done) throw failure("Event subscription ended")
+                  const frame = next.value
+                  if (frame.seq !== undefined) {
+                    if (frame.seq <= (through ?? -1)) continue
+                    through = frame.seq
+                  }
+                  output.enqueue(encoder.encode(frame.data))
                   return
                 }
-                ws.on("error", () => {})
-                ws.once("close", () => resume(Effect.void))
-                ws.close(1000, "Client shutting down")
-                return Effect.sync(() => ws.terminate())
-              }).pipe(Effect.timeoutOption("1 second"), Effect.asVoid),
-          )
-          yield* Effect.callback<void, TransportError>((resume) => {
-            ws.on("open", () => {
-              if (device && ws.protocol !== deviceProtocol) {
-                resume(Effect.fail(failure("Server does not support device sharing; deploy the updated Worker")))
-                ws.terminate()
-                return
+              } catch (cause) {
+                stop(id, failure("Event stream failed", cause))
+                void history?.cancel().catch(() => {})
+                void live.cancel().catch(() => {})
+                output.error(cause)
               }
-              socket = ws
-              lastPong = Date.now()
-              Effect.runSync(Deferred.succeed(ready, ws))
-            })
-            ws.on("message", (data) => {
-              const text = data.toString()
-              if (text === pong) {
-                lastPong = Date.now()
-                return
-              }
-              Effect.runFork(
-                Effect.try({
-                  try: () => decodeServer(text),
-                  catch: (cause) => failure("Invalid server frame", cause),
-                }).pipe(
-                  Effect.flatMap(receive),
-                  Effect.catch((error) =>
-                    Effect.sync(() => {
-                      resume(Effect.fail(error))
-                      ws.terminate()
-                    }),
-                  ),
-                ),
-              )
-            })
-            ws.on("error", (cause) =>
-              resume(Effect.fail(failure("WebSocket connection failed", cause))),
-            )
-            ws.on("close", () => resume(Effect.fail(failure("WebSocket disconnected"))))
-            return Effect.sync(() => ws.removeAllListeners())
-          })
-        }),
-      ).pipe(
-        Effect.ensuring(
-          Effect.gen(function* () {
-            socket = undefined
-            const error = failure("Transport disconnected; in-flight requests are not replayed")
-            yield* Deferred.fail(ready, error)
-            ready = Deferred.makeUnsafe()
-            yield* failPending(error)
-          }),
-        ),
-      )
-
-      yield* connection.pipe(
-        Effect.tapError((error) => Effect.logWarning(error.message)),
-        Effect.retry(Schedule.spaced("1 second")),
-        Effect.forkScoped,
-      )
-      // Cloudflare answers these without waking the object.
-      yield* Effect.sync(() => {
-        if (socket?.readyState !== WebSocket.OPEN) return
-        if (Date.now() - lastPong > 60_000) socket.terminate()
-        else socket.send(ping)
-      }).pipe(Effect.repeat(Schedule.spaced("30 seconds")), Effect.forkScoped)
-      const heartbeat = new TextEncoder().encode(": heartbeat\n\n")
-      yield* Effect.sync(() => {
-        for (const item of pending.values()) {
-          // Insert only between complete SSE frames, and never acknowledge local comments.
-          if (item.sse && item.trailingNewlines === 2 && Queue.sizeUnsafe(item.body) === 0) {
-            Queue.offerUnsafe(item.body, { bytes: heartbeat, acknowledge: false })
-          }
-        }
-      }).pipe(Effect.repeat(Schedule.spaced("15 seconds")), Effect.forkScoped)
-      yield* Effect.addFinalizer(() => failPending(failure("Client shutting down")))
-
-      return Transport.of({
-        fetch: Effect.fn("Transport.fetch")(function* (request: Request) {
-          yield* Deferred.await(ready).pipe(
-            Effect.timeout("15 seconds"),
-            Effect.mapError((cause) => failure("Transport unavailable", cause)),
-          )
-          if (pending.size >= maxRequests) return yield* Effect.fail(failure("Too many requests"))
-          const id = crypto.randomUUID()
-          const item: Pending = {
-            response: Deferred.makeUnsafe(),
-            uploadCredit: Deferred.makeUnsafe(),
-            body: yield* Queue.dropping<BodyChunk, TransportError | import("effect/Cause").Done>(
-              64,
-            ),
-            ended: false,
-            sse: false,
-            trailingNewlines: 2,
-            completed: Deferred.makeUnsafe(),
-            cleanup: () => {},
-          }
-          pending.set(id, item)
-          const cancel = () => {
-            if (!pending.delete(id)) return
-            item.cleanup()
-            Effect.runFork(
-              failOne.pipe(Effect.andThen(send({ type: "cancel", id })), Effect.ignore),
-            )
-          }
-          const failOne = Effect.gen(function* () {
-            const error = failure("Request cancelled")
-            yield* Deferred.fail(item.response, error)
-            yield* Deferred.fail(item.uploadCredit, error)
-            yield* Queue.fail(item.body, error)
-            yield* Deferred.succeed(item.completed, undefined)
-            item.cleanup()
-          })
-          item.cleanup = () => request.signal.removeEventListener("abort", cancel)
-          request.signal.addEventListener("abort", cancel, { once: true })
-          if (request.signal.aborted) {
-            cancel()
-            return yield* Effect.fail(failure("Request cancelled"))
-          }
-          const url = new URL(request.url)
-          const upload = Effect.gen(function* () {
-            yield* send({
-              type: "request",
-              id,
-              path: url.pathname + url.search,
-              method: request.method,
-              headers: wireHeaders(request.headers),
-              body: request.body !== null,
-            })
-            if (request.body) {
-              const reader = yield* Effect.acquireRelease(
-                Effect.sync(() => request.body!.getReader()),
-                (reader) => Effect.promise(() => reader.cancel().catch(() => undefined)),
-              )
-              while (true) {
-                const next = yield* Effect.tryPromise({
-                  try: () => reader.read(),
-                  catch: (cause) => failure("Read request body", cause),
-                })
-                if (next.done) break
-                for (let offset = 0; offset < next.value.byteLength; offset += chunkSize) {
-                  item.uploadCredit = Deferred.makeUnsafe()
-                  yield* send({
-                    type: "chunk",
-                    id,
-                    data: encodeBytes(next.value.subarray(offset, offset + chunkSize)),
-                  })
-                  yield* Deferred.await(item.uploadCredit).pipe(
-                    Effect.timeout("60 seconds"),
-                    Effect.mapError((cause) => failure("Upload stalled", cause)),
-                  )
-                }
-              }
-              yield* send({ type: "end", id })
-            }
-          }).pipe(
-            Effect.scoped,
-            Effect.catch((error) =>
-              Deferred.fail(item.response, error).pipe(Effect.andThen(Effect.sync(cancel))),
-            ),
-          )
-          yield* Effect.forkIn(Effect.raceFirst(upload, Deferred.await(item.completed)), scope)
-          return yield* Deferred.await(item.response).pipe(
-            Effect.onInterrupt(() => Effect.sync(cancel)),
-          )
-        }),
-      })
-    }),
-  )
+            },
+            async cancel() {
+              stop(id)
+              await Promise.allSettled([history?.cancel(), live.cancel()])
+            },
+          }, { highWaterMark: 0 })
+          // A finite replay's framing does not describe the following live stream.
+          const headers = new Headers(replay?.headers ?? sseHeaders)
+          headers.delete("content-length")
+          headers.delete("content-encoding")
+          return new Response(stream, { status: replay?.status ?? 200, headers })
+        }).pipe(Effect.onError(() => Effect.sync(() => stop(id))))
+      }),
+    })
+  }))

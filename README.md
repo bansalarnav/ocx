@@ -1,6 +1,6 @@
 # OpenCode on Cloudflare Durable Objects
 
-Run the OpenCode v2 server on your own Cloudflare account and connect from your terminal with `ocx`. Sessions live in SQLite-backed Durable Objects. The client carries HTTP and event streams over a hibernating WebSocket.
+Run the OpenCode v2 server on your own Cloudflare account and connect from your terminal with `ocx`. Sessions live in SQLite-backed Durable Objects. The client uses HTTP for API calls and log history, and a hibernating WebSocket for live events and device presence.
 
 This is an experimental, single-owner setup. Everyone with the server password shares access to its sessions, credentials, and configured devices. It uses OpenCode preview packages, currently pinned to `0.0.0-beta-18866`.
 

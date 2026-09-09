@@ -1,6 +1,6 @@
 /** Only ocx's authenticated WebSocket handshake carries these credentials. */
 export const deviceHeader = "x-ocx-device"
-export const deviceProtocol = "ocx.v1.device"
+export const deviceProtocol = "ocx.v2.device"
 export const devicePrefix = "ocx_device_"
 
 export interface SharedDevice {
