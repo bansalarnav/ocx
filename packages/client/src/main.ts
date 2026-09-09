@@ -1,4 +1,7 @@
 #!/usr/bin/env bun
+import { readFile } from "node:fs/promises"
+import { join } from "node:path"
+import { workspaceID } from "@ocx/protocol/workspaces"
 import { Effect, Layer, Schedule } from "effect"
 import { NodeRuntime, NodeServices } from "@effect/platform-node"
 import { ChildProcess } from "effect/unstable/process"
@@ -21,12 +24,14 @@ const main = Effect.gen(function* () {
     return
   }
   const options = yield* evaluate("Read arguments", () => parseArguments(args))
-  const transport = transportLayer(options.origin, process.env.OPENCODE_PASSWORD)
+  let workspace = options.workspace
+  while (true) {
+  const transport = transportLayer(options.origin, process.env.OPENCODE_PASSWORD, workspace)
   const services = Layer.mergeAll(
     Proxy.layer.pipe(Layer.provide(transport)),
     pluginsLayer(options).pipe(Layer.provide(Layer.merge(transport, Files.layer))),
   ).pipe(Layer.provideMerge(NodeServices.layer))
-  return yield* Effect.gen(function* () {
+  const result = yield* Effect.gen(function* () {
     const proxy = yield* Proxy
     const plugins = yield* Plugins
     const files = yield* plugins.prepare
@@ -40,6 +45,7 @@ const main = Effect.gen(function* () {
         extendEnv: true,
         env: {
           OPENCODE_PASSWORD: proxy.password,
+          OCX_PROXY_ORIGIN: proxy.origin,
           OPENCODE_CONFIG_DIR: files.configDir,
           OPENCODE_TUI_CONFIG: files.tuiConfig,
           OCX_CONTROL_DIR: files.controlDir,
@@ -52,10 +58,15 @@ const main = Effect.gen(function* () {
       Effect.forkScoped,
     )
     const code = yield* child.exitCode
-    yield* Effect.sync(() => {
-      process.exitCode = code
+    const next = yield* Effect.promise(async () => {
+      try { return workspaceID(JSON.parse(await readFile(join(files.controlDir, "workspace.json"), "utf8")).id) }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error }
     })
+    return { code, next }
   }).pipe(Effect.scoped, Effect.provide(services))
+  if (!result.next) { process.exitCode = result.code; break }
+  workspace = result.next
+  }
 })
 
 NodeRuntime.runMain(main)

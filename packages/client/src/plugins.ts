@@ -1,5 +1,6 @@
 import { Context, Effect, FileSystem, Layer, Schema } from "effect"
 import { createHash } from "node:crypto"
+import { fileURLToPath } from "node:url"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import { createInterface } from "node:readline/promises"
@@ -36,6 +37,7 @@ export interface ClientFiles {
 }
 const hash = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex")
 const approvalDirectory = "ocx-plugin-approvals"
+const remoteDirectory = "ocx-remote-workspaces"
 const problem = (message: string) =>
   new OperationError({ operation: "Plugin sync", cause: new Error(message) })
 
@@ -79,7 +81,7 @@ export const pluginsLayer = (options: Options, env = process.env) =>
           Effect.mapError((cause) => problem(String(cause))),
         )
         const ids = new Set(value.plugins.map((plugin) => plugin.id))
-        if (ids.size !== value.plugins.length || ids.has(approvalDirectory))
+        if (ids.size !== value.plugins.length || (ids.has(approvalDirectory) || ids.has(remoteDirectory)))
           return yield* Effect.fail(problem("Duplicate or reserved plugin id"))
         return value
       })
@@ -152,7 +154,7 @@ export const pluginsLayer = (options: Options, env = process.env) =>
         yield* fs.makeDirectory(root, { recursive: true, mode: 0o700 })
         const ids = new Set(active.map((plugin) => plugin.id))
         for (const name of yield* fs.readDirectory(root)) {
-          if (name !== approvalDirectory && !ids.has(name))
+          if (name !== approvalDirectory && name !== remoteDirectory && !ids.has(name))
             yield* fs.remove(join(root, name), { recursive: true, force: true })
         }
         const native: ActivePlugin[] = []
@@ -257,6 +259,8 @@ export const pluginsLayer = (options: Options, env = process.env) =>
         )
         yield* files.write(join(configDir, "plugins", approvalDirectory, "index.ts"), "export {}\n")
         yield* files.write(join(configDir, "plugins", approvalDirectory, "tui.ts"), ocxLoaderSource)
+        yield* files.write(join(configDir, "plugins", remoteDirectory, "index.ts"), "export {}\n")
+        yield* files.write(join(configDir, "plugins", remoteDirectory, "tui.tsx"), yield* fs.readFileString(fileURLToPath(new URL("./workspace-tui.tsx", import.meta.url))))
         yield* files.write(client.tuiConfig, JSON.stringify(yield* readTuiConfig, null, 2) + "\n")
         yield* materialize(client, active)
         return client

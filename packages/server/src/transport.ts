@@ -1,3 +1,4 @@
+import { workspaceHeader } from "@ocx/protocol/workspaces"
 import { Schema } from "effect"
 import { SessionEvent } from "@opencode-ai/schema/session-event"
 import type { Bus } from "@opencode-ai/core/bus"
@@ -327,6 +328,7 @@ export class SocketTransport {
       requests.set(frame.id, exchange)
       const headers = new Headers(frame.headers as [string, string][])
       headers.delete("host")
+      headers.delete(workspaceHeader)
       const authorization = attachment(socket).authorization
       if (authorization) headers.set("authorization", authorization)
       else headers.delete("authorization")

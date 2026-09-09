@@ -18,6 +18,7 @@
     "@cloudflare/workers-types": "latest",
     "@types/express": "5.0.6",
     "@types/node": "24.12.2",
+    "effect": "4.0.0-rc.112",
     "typescript": "latest",
     "wrangler": "latest"
   },

@@ -3,17 +3,19 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@cloudflare/computer": "0.2.1",
     "@cloudflare/worker-bundler": "^0.2.3",
     "@jitl/quickjs-wasmfile-release-sync": "0.32.0",
+    "@ocx/protocol": "workspace:*",
     "@opencode-ai/core": "0.0.0-beta-18866",
     "@opencode-ai/plugin": "0.0.0-beta-18866",
+    "@opencode-ai/protocol": "0.0.0-beta-18866",
+    "@opencode-ai/schema": "0.0.0-beta-18866",
     "@opencode-ai/server": "0.0.0-beta-18866",
     "@opencode-ai/util": "0.0.0-beta-18866",
+    "@platformatic/vfs": "0.4.0",
     "effect": "4.0.0-rc.112",
     "quickjs-emscripten-core": "0.32.0",
-    "zod": "4.1.8",
-    "@ocx/protocol": "workspace:*",
-    "@opencode-ai/protocol": "0.0.0-beta-18866",
-    "@opencode-ai/schema": "0.0.0-beta-18866"
+    "zod": "4.1.8"
   }
 }

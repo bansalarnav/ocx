@@ -12,6 +12,9 @@ import { makePluginManager } from "./plugin-manager/manager"
 import { PluginStore } from "./plugin-manager/store"
 import { makeLivePluginRegistry } from "./plugin-manager/registry"
 import { makeQuickJSPlugin } from "./plugin-manager/quickjs"
+import type { RemoteComputer } from "./remote/computer"
+import { remoteServices } from "./remote/services"
+import { remoteTools } from "./remote/tools"
 import { finalizeWithResponse } from "./response-lifecycle"
 
 export interface HostEnv extends DeviceMcpEnv {
@@ -32,7 +35,13 @@ const deviceToolsOnly = define({
     }),
 })
 
-export const hostLayer = (storage: DurableObjectStorage, env: HostEnv, observe: Bus.Subscriber) =>
+export interface RemoteHost {
+  computer: () => DurableObjectStub<RemoteComputer>
+  attached: () => boolean
+  git: (operation: "fetch" | "push", branch?: string) => Promise<unknown>
+}
+
+export const hostLayer = (storage: DurableObjectStorage, env: HostEnv, observe: Bus.Subscriber, remote?: RemoteHost) =>
   Layer.effect(
     Host,
     Effect.gen(function* () {
@@ -46,7 +55,7 @@ export const hostLayer = (storage: DurableObjectStorage, env: HostEnv, observe: 
             }),
           ),
         )
-        const registry = makeLivePluginRegistry([deviceToolsOnly])
+        const registry = makeLivePluginRegistry([deviceToolsOnly, ...(remote ? [remoteTools(remote.computer, remote.git)] : [])])
         yield* registry.upsert(makePluginManager(store, registry))
         for (const plugin of yield* store.list) {
           if (
@@ -83,6 +92,7 @@ export const hostLayer = (storage: DurableObjectStorage, env: HostEnv, observe: 
         const handler = yield* ServerFetch.make(ServerWorkerd.serverOptions(options), {
           overrides: [
             ...ServerWorkerd.replacements(options),
+            ...(remote ? remoteServices(remote.computer, storage, remote.attached) : []),
             SdkPlugins.node.replace(sdk),
             SessionExecution.node.replace(executionNode),
           ],

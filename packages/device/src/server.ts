@@ -429,7 +429,7 @@ function createMcpServer(): McpServer {
     "preview_start",
     {
       description:
-        "Start or attach to a local web server and expose it at a PUBLIC HTTPS preview URL through tnl. The URL has no preview-level authentication; never expose secrets or privileged development endpoints.",
+        "Start or attach to a local web server and expose it at a PUBLIC HTTPS preview URL through Cloudflare Tunnel. The URL has no preview-level authentication; never expose secrets or privileged development endpoints.",
       inputSchema: {
         port: z
           .number()
@@ -453,7 +453,7 @@ function createMcpServer(): McpServer {
           .regex(/^[a-z0-9][a-z0-9-]{0,62}$/)
           .optional()
           .describe(
-            "Optional tnl subdomain name. Defaults to the reusable opencode-preview hostname",
+            "Optional local preview label. Defaults to opencode-preview; Cloudflare assigns a random hostname",
           ),
         startupTimeout: z
           .number()

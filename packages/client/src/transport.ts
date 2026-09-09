@@ -42,7 +42,7 @@ export class Transport extends Context.Service<
 
 const failure = (message: string, cause?: unknown) => new TransportError({ message, cause })
 
-export const transportLayer = (origin: string, password?: string) =>
+export const transportLayer = (origin: string, password?: string, workspace?: string) =>
   Layer.effect(
     Transport,
     Effect.gen(function* () {
@@ -176,6 +176,7 @@ export const transportLayer = (origin: string, password?: string) =>
       const connection = Effect.scoped(
         Effect.gen(function* () {
           const url = new URL(socketPath, origin)
+          if (workspace) url.searchParams.set("workspace", workspace)
           url.protocol = url.protocol === "https:" ? "wss:" : "ws:"
           const ws = yield* Effect.acquireRelease(
             Effect.sync(

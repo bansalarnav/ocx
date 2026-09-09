@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { deviceMcpServers } from "../src/device-mcps"
+import { deviceMcpServers } from "../packages/server/src/device-mcps"
 
 describe("deviceMcpServers", () => {
   test("keeps the legacy device variables working", () => {

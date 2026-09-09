@@ -1,165 +1,154 @@
-# OpenCode on a Durable Object
+# OpenCode on Cloudflare Durable Objects
 
-This Worker runs the full OpenCode v2 HTTP server inside one Cloudflare Durable Object. SQLite-backed state and durable events survive object eviction.
+Run the OpenCode v2 server on your own Cloudflare account and connect from your terminal with `ocx`. Sessions and repository files live in SQLite-backed Durable Objects. The client carries HTTP and event streams over a hibernating WebSocket.
 
-`ocx` connects through a hibernating WebSocket. The normal OpenCode CLI talks HTTP and SSE to a private loopback proxy; the wrapper carries requests and responses over that socket. OpenCode's client and server packages remain unchanged.
+This is an experimental, single-owner setup. Everyone with the server password shares access to its sessions, repositories, credentials, and configured devices. It uses OpenCode preview packages, currently pinned to `0.0.0-beta-18866`.
 
-The current Worker build is about 25.5 MiB uncompressed and 6.5 MiB compressed, including esbuild's Wasm binary for runtime plugin bundling. Cloudflare's [current Worker size limit](https://developers.cloudflare.com/workers/platform/limits/#worker-size) is 64 MiB uncompressed, with no compressed-size limit.
+## Set up your remote instance
 
-## Repository layout
+You need [Bun](https://bun.sh/), a Cloudflare account, and a compatible OpenCode v2 preview CLI on your local machine. `ocx` launches `opencode2` by default. Use `--binary opencode` if your preview installation uses that name.
 
-- `packages/server`: Worker entry point, Durable Object transport, scoped OpenCode host, plugin registry and QuickJS bridge.
-- `packages/client`: Effect services for the WebSocket, loopback HTTP proxy, plugin cache, approvals and CLI process.
-- `packages/protocol`: shared Effect schemas, transport framing and manifest types.
-- `packages/device`: device MCP server and preview tools.
-
-Run `bun run typecheck` to check the packages and `bun run build` to bundle the Worker without deploying. The existing `test/` files are retained as historical coverage of the previous APIs; they have not been migrated or run during this rewrite.
-
-## Run locally
+Run these commands from this checkout:
 
 ```sh
-bun install
-bun run dev
+bun install --frozen-lockfile
+bunx wrangler login
 ```
 
-Check the server:
+Review `wrangler.jsonc` and choose a Worker name if you want to change the default, `opencode-durable-object`. Keep the Durable Object bindings and migration entries. Wrangler creates the objects on deployment; there is no VM to provision. The remote shell uses the configured Dynamic Worker loader.
 
-```sh
-curl http://localhost:8787/api/health
-bun run ocx --server http://localhost:8787
-```
-
-The v2 preview CLI may be named `opencode` instead of `opencode2` in your installation.
-
-## Load server-authored TUI plugins
-
-`ocx` is a small wrapper around `opencode2`. It fetches enabled TUI plugins from this Worker, asks before installing local code, verifies each artifact's SHA-256 digest, writes a disposable `tui.json`, then starts the normal CLI process.
-
-From this checkout:
-
-```sh
-OPENCODE_PASSWORD=secret bun run ocx --server https://opencode-durable-object.<subdomain>.workers.dev
-```
-
-Use `--binary opencode` if the preview executable on your machine has that name. Put options for OpenCode after `--`:
-
-```sh
-bun run ocx --server http://localhost:8787 -- --log-level DEBUG
-```
-
-The cache lives under `$XDG_DATA_HOME/ocx`, or `~/.local/share/ocx` when `XDG_DATA_HOME` is unset. Each server origin has a separate cache and approval file. A first install and every content change requires confirmation. `--yes` is available for trusted non-interactive use.
-
-`ocx` carries registry notifications over its authenticated WebSocket while the TUI runs. Publishing, editing, enabling, or disabling a TUI plugin notifies every connected `ocx` client. Each client shows its own approval dialog for new code, verifies and caches the artifact, then replaces the running plugin without restarting OpenCode. Starting with `--yes` also approves live updates automatically.
-
-Approved plugins are materialized in each client's disposable config directory at `plugins/<id>/index.ts` and `tui.tsx`. OpenCode watches those entrypoints and performs the hot reload itself. A small separate TUI plugin only presents approval dialogs for updates received while the client is running. Plugins must return cleanup functions so OpenCode can remove the previous version cleanly.
-
-The launcher reads the user's existing `tui.json` or `tui.jsonc`, but does not edit it. It passes the generated file through `OPENCODE_TUI_CONFIG` and uses a per-process `OPENCODE_CONFIG_DIR`, whose `plugins` directory OpenCode discovers automatically.
-
-## Protect and deploy it
-
-Set a password before exposing the Worker publicly:
+Set a strong password at the prompt, then deploy:
 
 ```sh
 bunx wrangler secret put OPENCODE_PASSWORD
 bun run deploy
 ```
 
-Connect with the same password:
+Copy the HTTPS Worker URL printed by Wrangler. In your local terminal, read the same password without putting it in shell history:
 
 ```sh
-OPENCODE_PASSWORD=secret bun run ocx --server https://opencode-durable-object.<subdomain>.workers.dev
+read -rs -p 'Server password: ' OPENCODE_PASSWORD; echo
+export OPENCODE_PASSWORD
+export OCX_SERVER_URL='https://opencode-durable-object.<subdomain>.workers.dev'
+
+curl --fail --user "opencode:$OPENCODE_PASSWORD" "$OCX_SERVER_URL/api/health"
+bun run ocx --server "$OCX_SERVER_URL"
 ```
 
-Without the secret, the complete API is public and unauthenticated.
+The password prompt above uses Bash. The Worker returns HTTP 503 until its password is configured, and 401 for missing or incorrect credentials. Local environment variables do not become deployed Worker secrets.
 
-## Device tools over MCP
+In the TUI, use `/connect` to configure a model provider. Use `/workspaces` to clone or resume a GitHub repository. For private repositories, `/github` asks for a local file containing your GitHub token. See [remote workspace setup and limits](docs/ux/remote-workspaces.md).
 
-The Durable Object disables OpenCode's built-in `read`, `glob`, `grep`, `write`, `edit`, `patch`, and `shell` tools. A small MCP server in `packages/device/src/server.ts` provides replacements that operate on this machine. Create a persistent token once, then start the server:
+## Connect with ocx
 
 ```sh
-mkdir -p ~/.tnl
-umask 077
-test -s ~/.tnl/opencode-device-token || openssl rand -hex 32 > ~/.tnl/opencode-device-token
-IFS= read -r OPENCODE_DEVICE_TOKEN < ~/.tnl/opencode-device-token
-export OPENCODE_DEVICE_TOKEN
-export OPENCODE_DEVICE_ROOT="$PWD"
+bun run ocx --server "$OCX_SERVER_URL"
+bun run ocx --server "$OCX_SERVER_URL" --binary opencode
+bun run ocx --server "$OCX_SERVER_URL" --workspace <id>
+bun run ocx --server "$OCX_SERVER_URL" -- --log-level DEBUG
+```
+
+`ocx` asks before installing server-authored TUI plugins and before accepting changed plugin code. `--yes` approves those changes automatically, including live updates. The launcher uses a disposable config and leaves your existing OpenCode config untouched. See [plugin loading and approvals](docs/tui-plugins.md).
+
+## Run a device MCP server yourself
+
+The optional device server lets the remote agent read and edit local files, run native shell commands, and publish web previews. Remote repository tools continue to operate on the Durable Object checkout. Device tools operate on the directory you select here; files are not synced between the two.
+
+Install `rg` for file searches and [cloudflared](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/) for tunnels. From this checkout, start the device server in one terminal:
+
+```sh
+export OPENCODE_DEVICE_ROOT='/absolute/path/to/your/project'
+export OPENCODE_DEVICE_TOKEN="$(openssl rand -hex 32)"
 bun run device
 ```
 
-It listens on `127.0.0.1:7331` by default. The MCP endpoint is `/mcp`; `/health` is available for tunnel health checks. Requests to `/mcp` require `Authorization: Bearer $OPENCODE_DEVICE_TOKEN`.
+Keep this terminal open. The server listens on `127.0.0.1:7331` and requires the token on `/mcp`. The shell tool runs with your local user's permissions; the workspace root is a starting directory, not a shell sandbox.
 
-In another terminal, expose port 7331 with `tnlc`:
+In another terminal, expose it through Cloudflare:
 
 ```sh
 bun run device:tunnel
 ```
 
-Then configure the Worker with the tunnel endpoint and the same token:
+Copy the `https://...trycloudflare.com` URL from cloudflared and append `/mcp`. In the first terminal, stop the device server briefly with Ctrl-C so you can configure the Worker using the same token:
 
 ```sh
-printf %s 'https://opencode-mcp.tnl.arnav.fish/mcp' | bunx wrangler secret put DEVICE_MCP_URL
-bunx wrangler secret put DEVICE_MCP_TOKEN < ~/.tnl/opencode-device-token
-
-bun run deploy
+bunx wrangler secret put DEVICE_MCP_URL
+# At the prompt, paste https://<assigned-host>.trycloudflare.com/mcp
+printf '%s' "$OPENCODE_DEVICE_TOKEN" | bunx wrangler secret put DEVICE_MCP_TOKEN
+bun run device
 ```
 
-The model receives the replacements as `device_read`, `device_glob`, `device_grep`, `device_write`, `device_edit`, `device_patch`, and `device_shell`.
+Reconnect `ocx` after setting both secrets. The remote host loads these settings for the default instance and remote workspaces. They apply to everyone using this Worker, even when the `ocx` client runs on another machine. Keep the device server and tunnel running while using device tools.
 
-### Multiple devices
+[Quick Tunnels](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/do-more-with-tunnels/trycloudflare/) assign a new hostname when restarted, so update `DEVICE_MCP_URL` each time. They are intended for development, have a 200 in-flight request limit, and do not support SSE. This device server returns JSON MCP responses. For a persistent setup, use a named Cloudflare Tunnel with a stable hostname pointed at `http://127.0.0.1:7331`, and set its HTTPS `/mcp` URL as the secret.
 
-Set the `DEVICE_MCP_SERVERS` secret to a JSON object keyed by device name. Names may contain lowercase letters, numbers, and underscores. Each name becomes the prefix for that device's tools.
+`OPENCODE_DEVICE_PORT` changes the local port; set it in both terminals. `OPENCODE_DEVICE_HOST` changes the bind address and defaults to loopback.
 
-```sh
-bunx wrangler secret put DEVICE_MCP_SERVERS
-```
-
-Paste a registry like this when Wrangler prompts for the secret:
+For multiple devices, set `DEVICE_MCP_SERVERS` with `bunx wrangler secret put DEVICE_MCP_SERVERS` and paste an object such as:
 
 ```json
 {
-  "laptop": {
-    "url": "https://my-laptop.tnl.arnav.fish/mcp",
-    "token": "token-used-by-the-laptop-device-server"
-  },
-  "desktop": {
-    "url": "https://my-desktop.tnl.arnav.fish/mcp",
-    "token": "token-used-by-the-desktop-device-server"
-  }
+  "laptop": { "url": "https://laptop.example.com/mcp", "token": "your-laptop-token" },
+  "desktop": { "url": "https://desktop.example.com/mcp", "token": "your-desktop-token" }
 }
 ```
 
-Run the device server and a uniquely named tunnel on each machine. For example, set `OPENCODE_DEVICE_TUNNEL_NAME=my-laptop` on the laptop and `OPENCODE_DEVICE_TUNNEL_NAME=my-desktop` on the desktop before running `bun run device:tunnel`.
+Names must start with a lowercase letter and contain at most 32 lowercase letters, digits, or underscores. Named entries are added alongside `DEVICE_MCP_URL`; an entry named `device` overrides that default. To remove access, stop the local server and tunnel, then delete whichever Worker secrets you configured with `bunx wrangler secret delete <name>`.
 
-The model then receives `laptop_read`, `laptop_shell`, `desktop_read`, `desktop_shell`, and the rest of each device's catalog. The device server includes its workspace root in its MCP instructions, which helps the model choose the right machine. Updating the registry secret creates a new Worker version, so the next Durable Object activation uses the new device list.
+The device's `preview_start` tool also uses cloudflared. Preview URLs are public and have no preview authentication. The optional preview `name` is a local label, not a hostname. `preview_stop` closes a preview; stopping the device server closes its previews.
 
-The old `DEVICE_MCP_URL` and `DEVICE_MCP_TOKEN` secrets remain supported as a device named `device`. Named registry entries are added alongside it. A `device` entry in `DEVICE_MCP_SERVERS` replaces the legacy slot.
+Automatic sharing through `ocx` is not implemented yet. A future `--share-device` option should own the server and tunnel, register them for the connection, and remove access on disconnect.
 
-### Public previews
+## Remote workspaces without containers
 
-The device server also exposes `device_preview_start`, `device_preview_list`, and `device_preview_stop`. The agent can launch a local web server, wait for its port, expose it through `tnlc`, and return the public HTTPS URL. For example, it can call `device_preview_start` with a command such as `bun run dev -- --host 127.0.0.1 --port 3000` and port `3000`.
+Repository work uses Cloudflare Workers, Durable Objects, and V8 only. No Docker, Cloudflare Container, or Cloudflare Sandbox is configured. Computer stores files in a SQLite DO; Dynamic Workers run just-bash commands and JavaScript modules against those files.
 
-If a web server is already running, the agent can omit `command` and provide only its port. `device_preview_stop` closes the tunnel and also stops the command launched by `device_preview_start`. The default URL is `https://opencode-preview.tnl.arnav.fish`; its certificate is cached, so later previews do not wait for new certificate issuance. Only one preview can use that hostname at a time. The agent can provide another name when it needs a second concurrent preview.
+Use `/workspaces` to clone or resume a GitHub repository. Public repositories work without a GitHub token. For private repositories and authenticated fetch/push, `/github` reads a token from a local file path and stores it in the server's catalog DO, outside the checkout and model transcript.
 
-Preview URLs are public and do not use the MCP bearer token. Do not preview applications containing secrets, administrative routes, or trusted development-only APIs.
+The agent has remote file tools, `remote_shell`, `remote_javascript`, and `remote_git`. You can run commands using `/remote-shell` and ES modules using `/remote-js`. `/remote-changes` shows Git status and diffs. Switching workspaces restarts the TUI against that workspace's session database. `--workspace <id>` attaches directly at startup.
 
-File operations reject paths and symlinks that leave `OPENCODE_DEVICE_ROOT`. The shell starts in that root but is intentionally not sandboxed; a shell command can still access anything allowed to the local operating-system user. Run this under a restricted user if that is not acceptable.
+just-bash supports shell scripts, pipes, file and text commands, `curl`, `jq`, `yq`, `xan`, `file`, and `html-to-markdown`. Git uses Computer's JavaScript implementation. JavaScript tasks support relative module imports, async workspace filesystem access, fetch, and assertions. Native programs, package installation, a full Node/Bun runtime, Python, browsers, PTYs, and background servers are unavailable. Checks that require those capabilities must be reported as untested.
 
-## Runtime limits
+See [remote workspace capabilities and examples](docs/ux/remote-workspaces.md) for authentication, execution APIs, limits, and local integration tests.
 
-The Workerd profile exposes every HTTP route, but Cloudflare cannot provide its own local process, filesystem, shell, or PTY. Sessions, configuration, credentials, integrations, model calls, events, and other database-backed APIs run inside the Durable Object. File and shell work crosses MCP to the device server while it is online. PTY endpoints remain unavailable.
+## Develop locally
 
-The Worker uses OpenCode's bundled model catalog and disables its periodic models.dev refresh. Update the OpenCode dependency and redeploy to pick up new catalog metadata.
+Create a git-ignored `.dev.vars` file containing a local password:
 
-## Connection and host lifetime
+```dotenv
+OPENCODE_PASSWORD=replace-with-a-local-password
+```
 
-An Effect `RcRef` owns the OpenCode host. Each ordinary request borrows it until the response body ends or is cancelled. Before returning the lease, the wrapper waits for OpenCode's execution service to report that all active turns have settled. This includes asynchronous prompts, queued starts, permission waits, retries and subagents. Closing the last lease finalizes the host and cancels its background timers. The next request rebuilds the host from SQLite and reloads the stored plugins.
+Then start Wrangler:
 
-The Durable Object accepts sockets with `acceptWebSocket`. Global events, plugin notifications and following session logs have subscription state in `serializeAttachment`, so they survive hibernation without an internal SSE reader. Session logs replay history through the normal finite HTTP route, then switch to live durable events after the replay watermark. Incoming messages wake the object. Client heartbeats use Cloudflare's automatic reply, which does not wake it. SSE heartbeat comments are generated locally for the CLI, between complete event frames.
+```sh
+bun install --frozen-lockfile
+bun run dev
+```
 
-The local proxy listens only on `127.0.0.1`, on a random port, and requires a fresh password supplied to the child process. Remote credentials stay in the wrapper. Requests retain their methods, paths, query strings and end-to-end headers. Request and response bodies travel in 32 KiB chunks with acknowledgements and cancellation. Connection-specific headers are removed. The protocol limits concurrent requests and subscription buffers; slow subscribers fail and reconnect instead of accumulating an unlimited backlog.
+In another terminal, export the same `OPENCODE_PASSWORD`, then run:
 
-After a network disconnect, the wrapper reconnects its socket. It fails in-flight requests without replaying them, since a mutation may already have reached the server. OpenCode reconnects its event streams; durable session logs can resume from their sequence cursor. Plugin notifications trigger a fresh manifest fetch on every reconnect.
+```sh
+curl --fail --user "opencode:$OPENCODE_PASSWORD" http://localhost:8787/api/health
+bun run ocx --server http://localhost:8787
+```
 
-Direct HTTP access remains available for tools such as `curl`. A client attached directly to the remote SSE endpoints still prevents hibernation. Use `ocx` for idle connections that can hibernate. Running model work and other active HTTP streams continue to keep the host alive.
+For local device testing, add `DEVICE_MCP_URL` and `DEVICE_MCP_TOKEN` to `.dev.vars` and restart Wrangler. Local and deployed secrets are separate.
 
-Typechecking, a Worker build and local HTTP/WebSocket checks do not verify Cloudflare eviction or billing. Confirm those against a deployed Worker with an idle attached client before relying on the expected savings.
+## Repository and checks
+
+- `packages/server`: Worker, Durable Objects, remote workspace tools, and plugin registry.
+- `packages/client`: `ocx`, WebSocket transport, loopback proxy, and TUI plugins.
+- `packages/protocol`: shared schemas and transport framing.
+- `packages/device`: local MCP server and Cloudflare preview tunnels.
+
+```sh
+bun run typecheck
+bun run build
+bun test test/remote test/device-mcps.test.ts test/device-preview.test.ts
+```
+
+The build bundles the Worker without deploying. Remote HTTP and WebSocket integration tests require a running server; see [validation](docs/ux/remote-workspaces.md#validation). Other top-level tests retain historical coverage of previous APIs.
+
+See [connection and host lifetime](docs/architecture.md) for transport details. Local checks do not verify Cloudflare eviction or billing. Test an idle attached client against your deployed Worker before relying on hibernation savings.

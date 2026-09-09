@@ -133,16 +133,16 @@ async function waitForPort(port: number, timeout: number, server?: ManagedProces
 async function waitForTunnel(tunnel: ManagedProcess, timeout: number): Promise<string> {
   const deadline = Date.now() + timeout
   while (Date.now() < deadline) {
-    const match = tunnel.output().match(/Forwarding\s+(https:\/\/\S+)/)
+    const match = tunnel.output().match(/(https:\/\/[a-z0-9-]+\.trycloudflare\.com)\b/i)
     if (match?.[1]) return match[1]
     const exit = await Promise.race([tunnel.closed, delay(100).then(() => undefined)])
     if (exit) {
       throw new Error(
-        `tnlc exited before publishing a URL: ${tunnel.output().trim() || JSON.stringify(exit)}`,
+        `cloudflared exited before publishing a URL: ${tunnel.output().trim() || JSON.stringify(exit)}`,
       )
     }
   }
-  throw new Error(`Timed out waiting for tnlc: ${tunnel.output().trim()}`)
+  throw new Error(`Timed out waiting for cloudflared: ${tunnel.output().trim()}`)
 }
 
 function exitMessage(label: string, exit: ProcessExit, output: string): string {
@@ -162,7 +162,7 @@ export class PreviewManager {
     )
     if (conflict) {
       throw new Error(
-        `Preview hostname ${name} is already in use by preview ${conflict.id}; stop it first or provide another name`,
+        `Preview name ${name} is already in use by preview ${conflict.id}; stop it first or provide another name`,
       )
     }
     let server: ManagedProcess | undefined
@@ -174,7 +174,7 @@ export class PreviewManager {
       }
       await waitForPort(input.port, input.startupTimeout, server)
 
-      tunnel = startProcess("tnlc", ["expose", String(input.port), "--name", name], input.workdir)
+      tunnel = startProcess("cloudflared", ["tunnel", "--no-autoupdate", "--url", `http://127.0.0.1:${input.port}`], input.workdir)
       const url = await waitForTunnel(tunnel, input.startupTimeout)
       const preview: Preview = {
         id,
@@ -230,7 +230,7 @@ export class PreviewManager {
     void preview.tunnel.closed.then((exit) => {
       if (preview.status !== "running") return
       preview.status = "failed"
-      preview.error = exitMessage("tnlc", exit, preview.tunnel.output())
+      preview.error = exitMessage("cloudflared", exit, preview.tunnel.output())
       terminateProcess(preview.server)
     })
     if (preview.server) {

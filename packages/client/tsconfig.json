@@ -1,8 +1,18 @@
 {
   "compilerOptions": {
-    "lib": ["ESNext", "DOM"],
-    "types": ["node"]
+    "lib": [
+      "ESNext",
+      "DOM"
+    ],
+    "types": [
+      "node"
+    ],
+    "jsx": "preserve",
+    "jsxImportSource": "@opentui/solid"
   },
-  "include": ["src/**/*.ts"],
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx"
+  ],
   "extends": "../../tsconfig.base.json"
 }
