@@ -34,6 +34,46 @@ The Worker returns HTTP 503 until its password is configured, and 401 for missin
 
 In the TUI, use `/connect` to configure a model provider.
 
+### Use an OpenCode server config
+
+OpenCode v2 reads `opencode.json` on the server. Because this server runs inside a Durable Object, it cannot see the config file in your local project. Sync one explicitly when you connect:
+
+```sh
+bun run ocx --server "https://opencode-durable-object.<subdomain>.workers.dev" \
+  --password 'your-server-password' \
+  --config ./opencode.json
+```
+
+The config is validated against the pinned OpenCode version, stored on the instance, and applied before the TUI opens. It stays active for later connections, so you only need `--config` when adding or changing settings. Use `--clear-config` to remove it. `OCX_CONFIG=/path/to/opencode.json` is the scripting equivalent.
+
+This is instance-wide config, not per-project config. Everyone with the server password uses it. Prefer `/connect` for provider credentials instead of putting API keys in the file. Local paths, local plugins, and local-process MCP servers cannot run inside the Cloudflare Worker. Remote providers and remote MCP servers are the useful cases here.
+
+For example, current OpenCode v2 config uses `providers` and `settings` for an OpenAI-compatible endpoint:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "providers": {
+    "acme": {
+      "name": "Acme Models",
+      "package": "@ai-sdk/openai-compatible",
+      "settings": {
+        "baseURL": "https://models.example.com/v1"
+      },
+      "models": {
+        "coder": {
+          "name": "Acme Coder",
+          "modelID": "coder-v1"
+        }
+      }
+    }
+  },
+  "model": "acme/coder"
+}
+```
+
+Sync the file, then use `/connect` and select `Acme Models` to save its API key in the server credential store. The config loader also migrates older OpenCode config keys such as `provider`, `npm`, and `options`.
+
 ## Connect with ocx
 
 ```sh

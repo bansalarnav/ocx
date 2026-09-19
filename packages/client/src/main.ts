@@ -9,6 +9,7 @@ import { Files } from "./files"
 import { Plugins, pluginsLayer } from "./plugins"
 import { Proxy } from "./proxy"
 import { transportLayer } from "./transport"
+import { syncInstanceConfig } from "./instance-config"
 
 const main = Effect.gen(function* () {
   const args = process.argv.slice(2)
@@ -32,12 +33,13 @@ const main = Effect.gen(function* () {
   const connect = Effect.gen(function* () {
     const transport = transportLayer(options.origin, options.password, device)
     const services = Layer.mergeAll(
-      Proxy.layer.pipe(Layer.provide(transport)),
-      pluginsLayer(options).pipe(Layer.provide(Layer.merge(transport, Files.layer))),
-    ).pipe(Layer.provideMerge(NodeServices.layer))
+      Proxy.layer,
+      pluginsLayer(options).pipe(Layer.provide(Files.layer)),
+    ).pipe(Layer.provideMerge(transport), Layer.provideMerge(NodeServices.layer))
     yield* Effect.gen(function* () {
       const proxy = yield* Proxy
       const plugins = yield* Plugins
+      yield* syncInstanceConfig(options)
       const files = yield* plugins.prepare
       const child = yield* ChildProcess.make(
         options.binary,

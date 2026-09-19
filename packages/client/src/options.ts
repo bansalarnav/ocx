@@ -9,6 +9,7 @@ export interface Options {
   binary: string
   dataRoot: string
   yes: boolean
+  config: string | null | undefined
   childArgs: string[]
 }
 
@@ -21,6 +22,8 @@ Options:
   --device-root <path>  Directory to share (default: current directory)
   --binary <path>       CLI to launch (default: opencode2)
   --data-dir <path>     Cache root (default: $XDG_DATA_HOME/ocx or ~/.local/share/ocx)
+  --config <path>       Sync an opencode.json/jsonc to the server before launch
+  --clear-config        Remove the server's saved OpenCode config before launch
   --yes                Approve new or changed plugin bytes without prompting
   -h, --help           Show this help
 
@@ -55,6 +58,8 @@ export const parseArguments = (args: string[], env = process.env): Options => {
   let dataRoot =
     env.OCX_DATA_HOME || join(env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "ocx")
   let yes = false
+  let config: string | null | undefined = env.OCX_CONFIG ? resolve(env.OCX_CONFIG) : undefined
+  let configArgument = false
   const childArgs: string[] = []
 
   for (let index = 0; index < args.length; index++) {
@@ -77,13 +82,23 @@ export const parseArguments = (args: string[], env = process.env): Options => {
       yes = true
       continue
     }
-    if (arg === "--server" || arg === "--password" || arg === "--binary" || arg === "--data-dir") {
+    if (arg === "--clear-config") {
+      if (configArgument) fail("--clear-config cannot be combined with --config")
+      config = null
+      continue
+    }
+    if (arg === "--server" || arg === "--password" || arg === "--binary" || arg === "--data-dir" || arg === "--config") {
       const value = args[++index]
       if (!value) fail(`${arg} requires a value`)
       if (arg === "--server") server = value
       else if (arg === "--password") password = value
       else if (arg === "--binary") binary = value
-      else dataRoot = resolve(value)
+      else if (arg === "--data-dir") dataRoot = resolve(value)
+      else {
+        if (config === null) fail("--config cannot be combined with --clear-config")
+        config = resolve(value)
+        configArgument = true
+      }
       continue
     }
     if (arg.startsWith("-")) fail(`Unknown ocx option: ${arg}. Put OpenCode options after --.`)
@@ -93,5 +108,5 @@ export const parseArguments = (args: string[], env = process.env): Options => {
 
   if (deviceRoot && !shareDevice) fail("--device-root requires --share-device")
   if (!server) throw new Error("Missing server URL\n\n" + usage)
-  return { shareDevice, deviceRoot: deviceRoot ?? process.cwd(), origin: normalizeOrigin(server), password, binary, dataRoot, yes, childArgs }
+  return { shareDevice, deviceRoot: deviceRoot ?? process.cwd(), origin: normalizeOrigin(server), password, binary, dataRoot, yes, config, childArgs }
 }

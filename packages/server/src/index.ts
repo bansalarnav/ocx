@@ -7,6 +7,7 @@ import { Host, hostLayer, type HostEnv } from "./host"
 import { makePluginStore, PluginStore } from "./plugin-manager/store"
 import { authenticated, makeTuiRegistryEvents, makeTuiRegistryHandler } from "./tui-registry"
 import { SocketTransport } from "./transport"
+import { makeInstanceConfigHandler, makeInstanceConfigStore } from "./instance-config"
 
 export interface Env extends HostEnv {
   OPENCODE: DurableObjectNamespace<OpenCodeDO>
@@ -16,6 +17,7 @@ export class OpenCodeDO extends DurableObject<Env> {
   private readonly transport: SocketTransport
   private readonly runtime: ManagedRuntime.ManagedRuntime<Host, never>
   private readonly registry: ReturnType<typeof makeTuiRegistryHandler>
+  private readonly instanceConfig: ReturnType<typeof makeInstanceConfigHandler>
 
   constructor(state: DurableObjectState, env: Env) {
     super(state, env)
@@ -25,9 +27,11 @@ export class OpenCodeDO extends DurableObject<Env> {
       this.transport.publish("plugins", "event: changed\ndata: 0\n\n"),
     )
     const store = makePluginStore(state.storage, events.publish)
+    const instanceConfig = makeInstanceConfigStore(state.storage)
     this.registry = makeTuiRegistryHandler(store, env.OPENCODE_PASSWORD, events)
+    this.instanceConfig = makeInstanceConfigHandler(instanceConfig, env.OPENCODE_PASSWORD)
     this.runtime = ManagedRuntime.make(
-      hostLayer(state.storage, env, (event) =>
+      hostLayer(state.storage, env, instanceConfig, (event) =>
         Effect.sync(() => {
           this.transport.publishLog(event)
           if (isOpenCodeEvent(event))
@@ -48,6 +52,11 @@ export class OpenCodeDO extends DurableObject<Env> {
     }
     return this.runtime.runPromise(
       Effect.gen({ self: this }, function* () {
+        const configured = yield* this.instanceConfig(request)
+        if (configured) {
+          if (configured.changed) yield* (yield* Host).invalidate
+          return configured.response
+        }
         const response = yield* this.registry(request)
         if (response) return response
         const host = yield* Host

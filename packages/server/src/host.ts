@@ -15,6 +15,7 @@ import { PluginStore } from "./plugin-manager/store"
 import { makeLivePluginRegistry } from "./plugin-manager/registry"
 import { makeQuickJSPlugin } from "./plugin-manager/quickjs"
 import { finalizeWithResponse } from "./response-lifecycle"
+import type { InstanceConfigStore } from "./instance-config"
 
 export interface HostEnv extends DeviceMcpEnv {
   OPENCODE_PASSWORD?: string
@@ -23,6 +24,7 @@ export class Host extends Context.Service<
   Host,
   {
     readonly fetch: (request: Request) => Effect.Effect<Response, Error | OperationError>
+    readonly invalidate: Effect.Effect<void>
   }
 >()("ocx/Host") {}
 
@@ -34,7 +36,13 @@ const deviceToolsOnly = define({
     }),
 })
 
-export const hostLayer = (storage: DurableObjectStorage, env: HostEnv, observe: Bus.Subscriber, devices?: SharedDevices) =>
+export const hostLayer = (
+  storage: DurableObjectStorage,
+  env: HostEnv,
+  instanceConfig: InstanceConfigStore,
+  observe: Bus.Subscriber,
+  devices?: SharedDevices,
+) =>
   Layer.effect(
     Host,
     Effect.gen(function* () {
@@ -61,11 +69,12 @@ export const hostLayer = (storage: DurableObjectStorage, env: HostEnv, observe: 
           }
         }
         const mcp = yield* evaluate("Read device configuration", () => deviceMcpServers(env))
+        const config = yield* instanceConfig.effective(mcp)
         const options = {
           storage,
           password: env.OPENCODE_PASSWORD,
           models: { fetch: false },
-          config: { content: JSON.stringify({ mcp: { servers: mcp } }) },
+          config: { content: config },
         }
         const sdk = makeGlobalNode({
           service: SdkPlugins.Service,
@@ -131,6 +140,7 @@ export const hostLayer = (storage: DurableObjectStorage, env: HostEnv, observe: 
             Effect.onExit((exit) => (Exit.isFailure(exit) ? Effect.promise(close) : Effect.void)),
           )
         }),
+        invalidate: RcRef.invalidate(ref),
       })
     }),
   )
