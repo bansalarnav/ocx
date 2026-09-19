@@ -17,18 +17,30 @@ describe("instance OpenCode config", () => {
     expect(parsed.content.providers).toBeDefined()
   })
 
-  test("accepts JSONC and normalizes legacy provider config", () => {
+  test("accepts JSONC in the current schema", () => {
     const parsed = parseInstanceConfig(`{
       // OpenAI-compatible custom provider
-      "provider": {
+      "providers": {
         "acme": {
-          "npm": "@ai-sdk/openai-compatible",
-          "options": { "baseURL": "https://models.example/v1" },
+          "package": "@ai-sdk/openai-compatible",
+          "settings": { "baseURL": "https://models.example/v1" },
           "models": { "coder": { "name": "Coder" } },
         },
       },
     }`)
     expect(parsed.content.providers).toBeDefined()
+  })
+
+  test("rejects v1 provider keys", () => {
+    expect(() => parseInstanceConfig(`{
+      "provider": {
+        "acme": {
+          "npm": "@ai-sdk/openai-compatible",
+          "options": { "baseURL": "https://models.example/v1" },
+          "models": { "coder": { "name": "Coder" } }
+        }
+      }
+    }`)).toThrow("provider")
   })
 
   test("preserves configured MCP servers and reserves injected device names", () => {
@@ -51,6 +63,6 @@ describe("instance OpenCode config", () => {
 
   test("rejects malformed and schema-invalid config", () => {
     expect(() => parseInstanceConfig("{")).toThrow("at offset")
-    expect(() => parseInstanceConfig(`{ "providers": { "acme": { "env": 42 } } }`)).toThrow("Invalid OpenCode config")
+    expect(() => parseInstanceConfig(`{ "providers": { "acme": { "env": 42 } } }`)).toThrow("env")
   })
 })

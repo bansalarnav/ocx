@@ -72,7 +72,7 @@ For example, current OpenCode v2 config uses `providers` and `settings` for an O
 }
 ```
 
-Sync the file, then use `/connect` and select `Acme Models` to save its API key in the server credential store. The config loader also migrates older OpenCode config keys such as `provider`, `npm`, and `options`.
+Sync the file, then use `/connect` and select `Acme Models` to save its API key in the server credential store. `ocx` accepts the current OpenCode v2 schema only.
 
 ## Connect with ocx
 

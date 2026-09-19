@@ -1,6 +1,5 @@
-import { ConfigNormalize } from "@opencode-ai/core/config/normalize"
 import { Config } from "@opencode-ai/schema/config"
-import { Effect, Option, Schema } from "effect"
+import { Effect, Schema } from "effect"
 import { parse, printParseErrorCode, type ParseError } from "jsonc-parser"
 import { attempt, evaluate, OperationError } from "@ocx/protocol/errors"
 import type { RemoteMcpServer } from "./device-mcps"
@@ -10,15 +9,14 @@ const path = "/api/ocx/config"
 const storageKey = "ocx/instance-config"
 const maximumBytes = 256 * 1024
 const encoder = new TextEncoder()
-const decode = Schema.decodeUnknownOption(Config.Info, {
+const decode = Schema.decodeUnknownSync(Config.Info, {
   errors: "all",
-  onExcessProperty: "ignore",
+  onExcessProperty: "error",
   propertyOrder: "original",
 })
 
 export interface ParsedInstanceConfig {
   content: Readonly<Record<string, unknown>>
-  diagnostics: readonly ConfigNormalize.Diagnostic[]
 }
 
 export function parseInstanceConfig(content: string): ParsedInstanceConfig {
@@ -30,19 +28,7 @@ export function parseInstanceConfig(content: string): ParsedInstanceConfig {
     const error = errors[0]!
     throw new Error(`${printParseErrorCode(error.error)} at offset ${error.offset}`)
   }
-  const normalized = ConfigNormalize.normalize(input)
-  if (normalized.type === "rejected") {
-    throw new Error(normalized.diagnostics.map((item) => item.message).join("; ") || "Config was rejected")
-  }
-  const invalid = normalized.diagnostics.filter((item) => item.kind === "invalid")
-  if (invalid.length) {
-    throw new Error(invalid.map((item) => {
-      const location = item.path.length ? ` at ${item.path.join(".")}` : ""
-      return `Invalid OpenCode config${location}: ${item.message}`
-    }).join("; "))
-  }
-  if (Option.isNone(decode(normalized.encoded))) throw new Error("Config does not match the OpenCode schema")
-  return { content: normalized.encoded, diagnostics: normalized.diagnostics }
+  return { content: decode(input) as unknown as Readonly<Record<string, unknown>> }
 }
 
 export function effectiveInstanceConfig(
@@ -160,5 +146,5 @@ export const makeInstanceConfigHandler = (store: InstanceConfigStore, password?:
       if (!parsed.ok)
         return { changed: false, response: json({ error: parsed.error.message }, 400) }
       const changed = yield* store.put(content)
-      return { changed, response: json({ changed, diagnostics: parsed.value.diagnostics }) }
+      return { changed, response: json({ changed }) }
     })

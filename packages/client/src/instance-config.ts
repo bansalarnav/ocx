@@ -5,7 +5,6 @@ import { attempt, OperationError } from "@ocx/protocol/errors"
 
 interface SyncResult {
   changed?: boolean
-  diagnostics?: Array<{ kind?: string; path?: string[]; message?: string }>
   error?: string
 }
 
@@ -29,10 +28,6 @@ export const syncInstanceConfig = (options: Options) =>
         operation: "Sync instance config",
         cause: new Error(result.error ?? `HTTP ${response.status}`),
       }))
-    }
-    for (const diagnostic of result.diagnostics ?? []) {
-      const location = diagnostic.path?.length ? ` at ${diagnostic.path.join(".")}` : ""
-      yield* Effect.sync(() => console.error(`OpenCode config ${diagnostic.kind ?? "warning"}${location}: ${diagnostic.message ?? "Unknown warning"}`))
     }
     if (!result.changed) return
     yield* Effect.sync(() => console.error(
