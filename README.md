@@ -2,11 +2,13 @@
 
 Run the OpenCode v2 server on your own Cloudflare account and connect from your terminal with `ocx`. Sessions live in SQLite-backed Durable Objects. The client uses HTTP for API calls and log history, and a hibernating WebSocket for live events and device presence.
 
-This is an experimental, single-owner setup. Everyone with the server password shares access to its sessions, credentials, and configured devices. It uses OpenCode preview packages, currently pinned to `0.0.0-beta-18866`.
+This is an experimental, single-owner setup. Everyone with the server password shares access to its sessions, credentials, and configured devices. It uses stable OpenCode packages pinned to `2.3.0`.
+
+`bun run ocx` opens local OpenCode with a built-in **Remote** menu. Connect a remote, move conversations in either direction, create remote threads, browse repositories, open PRs, and recover transfers inside OpenCode. Destination conversations open automatically in the same terminal. See [local and remote workspaces](docs/remote-workspaces.md) for the user flow and server setup.
 
 ## Set up your remote instance
 
-You need [Bun](https://bun.sh/), a Cloudflare account, and a compatible OpenCode v2 preview CLI on your local machine. `ocx` launches `opencode2` by default. Use `--binary opencode` if your preview installation uses that name.
+You need [Bun](https://bun.sh/), a Cloudflare account, and the stable OpenCode v2 CLI on your local machine. Install the matching version with `npm install -g @opencode/cli@2.3.0`. `ocx` launches `opencode` by default. Use `--binary /path/to/opencode` to select another installation.
 
 Run these commands from this checkout:
 
@@ -24,13 +26,15 @@ bunx wrangler secret put OPENCODE_PASSWORD
 bun run deploy
 ```
 
-Copy the HTTPS Worker URL printed by Wrangler, then connect using the same password:
+Start OpenCode through the launcher:
 
 ```sh
-bun run ocx --server "https://opencode-durable-object.<subdomain>.workers.dev" --password 'your-server-password'
+bun run ocx
 ```
 
-The Worker returns HTTP 503 until its password is configured, and 401 for missing or incorrect credentials. `OPENCODE_PASSWORD` remains available as a fallback when `--password` is omitted. A command-line password may be saved in shell history or briefly visible to other processes on the same machine.
+Open `/remote`, choose **Connect a remote**, and enter the HTTPS Worker URL printed by Wrangler and its password. The launcher remembers the connection on this device. Maritime and Artifacts setup for remote execution is described in [remote workspaces](docs/remote-workspaces.md#server-setup).
+
+The Worker returns HTTP 503 until its password is configured, and 401 for missing or incorrect credentials. Command-line connection options remain available for automation.
 
 In the TUI, use `/connect` to configure a model provider.
 

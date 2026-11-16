@@ -1,6 +1,6 @@
 import { Cause, Effect, FiberSet, Semaphore } from "effect"
-import { define, type Context } from "@opencode-ai/plugin/effect/plugin"
-import { Tool } from "@opencode-ai/schema/tool"
+import { define, type Context } from "@opencode/plugin/effect/plugin"
+import { Tool } from "@opencode/schema/tool"
 import { attempt, evaluate } from "@ocx/protocol/errors"
 import { armRuntime, loadModule, unwrap, waitForPromise } from "./quickjs-vm"
 import type { StoredPlugin } from "./types"

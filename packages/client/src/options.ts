@@ -13,14 +13,20 @@ export interface Options {
   childArgs: string[]
 }
 
-export const usage = `Usage: ocx [options] <server-url> [-- opencode2 arguments]
+export const usage = `Usage: ocx [-- opencode arguments]
+       ocx --server <server-url> [options] [-- opencode arguments]
+       ocx remote <command> [options]
+
+Without --server, starts ordinary local OpenCode with your existing configuration.
+Open /remote inside OpenCode to create remote threads or move conversations.
+Use ocx remote --help for automation commands.
 
 Options:
   --server <url>        OpenCode server URL (alternative to the positional URL)
   --password <value>    Server password (default: OPENCODE_PASSWORD)
   --share-device        Share local files and shell through OpenTunnel
   --device-root <path>  Directory to share (default: current directory)
-  --binary <path>       CLI to launch (default: opencode2)
+  --binary <path>       CLI to launch (default: opencode)
   --data-dir <path>     Cache root (default: $XDG_DATA_HOME/ocx or ~/.local/share/ocx)
   --config <path>       Sync an opencode.json/jsonc to the server before launch
   --clear-config        Remove the server's saved OpenCode config before launch
@@ -54,7 +60,7 @@ export const parseArguments = (args: string[], env = process.env): Options => {
   let deviceRoot: string | undefined
   let server: string | undefined
   let password = env.OPENCODE_PASSWORD
-  let binary = env.OCX_OPENCODE_BINARY || "opencode2"
+  let binary = env.OCX_OPENCODE_BINARY || "opencode"
   let dataRoot =
     env.OCX_DATA_HOME || join(env.XDG_DATA_HOME || join(homedir(), ".local", "share"), "ocx")
   let yes = false
@@ -107,6 +113,7 @@ export const parseArguments = (args: string[], env = process.env): Options => {
   }
 
   if (deviceRoot && !shareDevice) fail("--device-root requires --share-device")
-  if (!server) throw new Error("Missing server URL\n\n" + usage)
-  return { shareDevice, deviceRoot: deviceRoot ?? process.cwd(), origin: normalizeOrigin(server), password, binary, dataRoot, yes, config, childArgs }
+  if (!server && shareDevice) fail("--share-device requires --server")
+  if (!server && config === null) fail("--clear-config requires --server")
+  return { shareDevice, deviceRoot: deviceRoot ?? process.cwd(), origin: server ? normalizeOrigin(server) : "", password, binary, dataRoot, yes, config, childArgs }
 }

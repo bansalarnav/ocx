@@ -6,21 +6,22 @@
     "ocx": "packages/client/src/main.ts"
   },
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "prepare:checkpoint": "bun scripts/build-checkpoint.ts",
+    "dev": "bun run prepare:checkpoint && wrangler dev",
+    "deploy": "bun run prepare:checkpoint && wrangler deploy",
     "device": "bun packages/device/src/server.ts",
     "device:tunnel": "bun packages/device/src/tunnel-main.ts",
     "ocx": "bun packages/client/src/main.ts",
     "typecheck": "tsc -p packages/server && tsc -p packages/client && tsc -p packages/device",
-    "build": "wrangler deploy --dry-run --outdir dist/worker"
+    "build": "bun run prepare:checkpoint && wrangler deploy --dry-run --outdir dist/worker"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "latest",
+    "@cloudflare/workers-types": "^5.20261116.1",
     "@types/express": "5.0.6",
     "@types/node": "24.12.2",
-    "effect": "4.0.0-rc.112",
+    "effect": "4.1.0",
     "typescript": "latest",
-    "wrangler": "latest"
+    "wrangler": "^4.162.0"
   },
   "workspaces": [
     "packages/*",

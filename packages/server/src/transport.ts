@@ -1,8 +1,8 @@
 import { deviceHeader, deviceProtocol, parseSharedDevice, type SharedDevice } from "@ocx/protocol/device"
 import { Schema } from "effect"
-import { SessionEvent } from "@opencode-ai/schema/session-event"
-import { Event } from "@opencode-ai/schema/event"
-import type { Bus } from "@opencode-ai/core/bus"
+import { SessionEvent } from "@opencode/schema/session-event"
+import { Event } from "@opencode/schema/event"
+import type { Bus } from "@opencode/core/bus"
 import {
   decodeClient, maxFrameBytes, maxSubscriptions, ping, pong, protocol,
   type Channel, type ClientFrame, type ServerFrame,

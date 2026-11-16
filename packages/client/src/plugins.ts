@@ -2,6 +2,8 @@ import { Context, Effect, FileSystem, Layer, Schema } from "effect"
 import { createHash } from "node:crypto"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
+import { symlink } from "node:fs/promises"
 import { createInterface } from "node:readline/promises"
 import { parse as parseJsonc, type ParseError, printParseErrorCode } from "jsonc-parser"
 import { attempt, evaluate, OperationError } from "@ocx/protocol/errors"
@@ -33,9 +35,11 @@ export interface ClientFiles {
   configDir: string
   tuiConfig: string
   controlDir: string
+  cliContent?: string
 }
 const hash = (bytes: string | Uint8Array) => createHash("sha256").update(bytes).digest("hex")
 const approvalDirectory = "ocx-plugin-approvals"
+const workspaceDirectory = "ocx-workspaces"
 const problem = (message: string) =>
   new OperationError({ operation: "Plugin sync", cause: new Error(message) })
 
@@ -52,7 +56,7 @@ export class Plugins extends Context.Service<
   }
 >()("ocx/Plugins") {}
 
-export const pluginsLayer = (options: Options, env = process.env) =>
+export const pluginsLayer = (options: Options, env = process.env, behavior: { deferInitialApprovals?: boolean } = {}) =>
   Layer.effect(
     Plugins,
     Effect.gen(function* () {
@@ -79,7 +83,7 @@ export const pluginsLayer = (options: Options, env = process.env) =>
           Effect.mapError((cause) => problem(String(cause))),
         )
         const ids = new Set(value.plugins.map((plugin) => plugin.id))
-        if (ids.size !== value.plugins.length || ids.has(approvalDirectory))
+        if (ids.size !== value.plugins.length || ids.has(approvalDirectory) || ids.has(workspaceDirectory))
           return yield* Effect.fail(problem("Duplicate or reserved plugin id"))
         return value
       })
@@ -152,13 +156,14 @@ export const pluginsLayer = (options: Options, env = process.env) =>
         yield* fs.makeDirectory(root, { recursive: true, mode: 0o700 })
         const ids = new Set(active.map((plugin) => plugin.id))
         for (const name of yield* fs.readDirectory(root)) {
-          if (name !== approvalDirectory && !ids.has(name))
+          if (name !== approvalDirectory && name !== workspaceDirectory && !ids.has(name))
             yield* fs.remove(join(root, name), { recursive: true, force: true })
         }
         const native: ActivePlugin[] = []
         for (const plugin of active) {
           const directory = join(root, plugin.id)
           const path = join(directory, "tui.tsx")
+          yield* files.write(join(directory, "package.json"), JSON.stringify({ name: plugin.id, private: true, type: "module", exports: { ".": "./index.ts", "./tui": "./tui.tsx" } }) + "\n")
           if (!(yield* fs.exists(join(directory, "index.ts"))))
             yield* files.write(join(directory, "index.ts"), "export {}\n")
           const unchanged =
@@ -202,10 +207,11 @@ export const pluginsLayer = (options: Options, env = process.env) =>
         )
       })
       const readTuiConfig = Effect.gen(function* () {
-        const directory = join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "opencode")
+        const global = join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "opencode")
+        const directories = [...new Set([...(env.OPENCODE_CONFIG_DIR ? [resolve(env.OPENCODE_CONFIG_DIR)] : []), global])]
         const candidates = env.OPENCODE_TUI_CONFIG
           ? [resolve(env.OPENCODE_TUI_CONFIG)]
-          : [join(directory, "tui.jsonc"), join(directory, "tui.json")]
+          : directories.flatMap(directory => [join(directory, "cli.json"), join(directory, "tui.jsonc"), join(directory, "tui.json")])
         for (const path of candidates) {
           if (!(yield* fs.exists(path))) continue
           const content = yield* fs.readFileString(path)
@@ -216,10 +222,16 @@ export const pluginsLayer = (options: Options, env = process.env) =>
               throw new Error(
                 errors[0] ? printParseErrorCode(errors[0].error) : "Expected an object",
               )
-            return value as Record<string, unknown>
+            const settings = value as Record<string, unknown>
+            const localEntry = (entry: string) => entry.startsWith("./") || entry.startsWith("../") ? resolve(path, "..", entry) : entry
+            return {
+              ...settings,
+              ...(Array.isArray(settings.plugins) ? { plugins: settings.plugins.map(entry => typeof entry === "string" ? localEntry(entry) :
+                entry && typeof entry === "object" && typeof entry.package === "string" ? { ...entry, package: localEntry(entry.package) } : entry) } : {}),
+            } as Record<string, unknown>
           })
         }
-        return { $schema: "https://opencode.ai/tui.json" }
+        return { $schema: "https://opencode.ai/v2/cli.json" } as Record<string, unknown>
       })
       const prepare = Effect.gen(function* () {
         const trustPath = join(serverDir, "trust.json")
@@ -230,11 +242,12 @@ export const pluginsLayer = (options: Options, env = process.env) =>
         if (trust && (trust.schemaVersion !== 1 || trust.origin !== options.origin))
           return yield* Effect.fail(problem("Server identity mismatch"))
         const approved = yield* approvals
-        const active = yield* install(yield* manifest, approved, approve)
+        const active = yield* install(yield* manifest, approved,
+          behavior.deferInitialApprovals && !options.yes ? () => Effect.succeed(false) : approve)
         const controlDir = join(serverDir, "clients", crypto.randomUUID())
         // Each process owns its generated config, so approvals and hot reloads cannot cross clients.
         const configDir = join(controlDir, "config")
-        const client = { controlDir, configDir, tuiConfig: join(configDir, "tui.json") }
+        const client: ClientFiles = { controlDir, configDir, tuiConfig: join(configDir, "cli.json") }
         yield* Effect.addFinalizer(() =>
           fs.remove(controlDir, { recursive: true, force: true }).pipe(Effect.orDie),
         )
@@ -248,16 +261,38 @@ export const pluginsLayer = (options: Options, env = process.env) =>
           JSON.stringify({
             private: true,
             dependencies: {
-              "@opencode-ai/plugin": "0.0.0-beta-18866",
-              "@opentui/core": "0.5.9",
-              "@opentui/solid": "0.5.9",
-              "solid-js": "1.9.15",
+              "@opencode/plugin": "2.3.0",
+              "@opencode-ai/plugin": "npm:@opencode/plugin@2.3.0",
+              "@opentui/core": "0.8.4",
+              "@opentui/solid": "0.8.4",
+              "solid-js": "1.9.17",
             },
           }) + "\n",
         )
         yield* files.write(join(configDir, "plugins", approvalDirectory, "index.ts"), "export {}\n")
+        for (const id of [approvalDirectory, workspaceDirectory])
+          yield* files.write(join(configDir, "plugins", id, "package.json"), JSON.stringify({ name: id, private: true, type: "module", exports: { ".": "./index.ts", "./tui": "./tui.ts" } }) + "\n")
         yield* files.write(join(configDir, "plugins", approvalDirectory, "tui.ts"), ocxLoaderSource)
-        yield* files.write(client.tuiConfig, JSON.stringify(yield* readTuiConfig, null, 2) + "\n")
+        yield* files.write(join(configDir, "plugins", workspaceDirectory, "index.ts"), "export {}\n")
+        yield* files.write(join(configDir, "plugins", workspaceDirectory, "tui.ts"), `export { default } from ${JSON.stringify(fileURLToPath(new URL("./workspace-tui.ts", import.meta.url)))}\n`)
+        const originalDirectories = [...new Set([...(env.OPENCODE_CONFIG_DIR ? [resolve(env.OPENCODE_CONFIG_DIR)] : []), join(env.XDG_CONFIG_HOME || join(homedir(), ".config"), "opencode")])]
+        for (const asset of ["themes", "sounds"]) {
+          for (const original of originalDirectories) {
+            const source = join(original, asset)
+            if (!(yield* fs.exists(source))) continue
+            yield* attempt("Preserve TUI assets", () => symlink(source, join(configDir, asset), process.platform === "win32" ? "junction" : undefined))
+            break
+          }
+        }
+        const settings = yield* readTuiConfig
+        // Stable OpenCode merges this inline config on every reload, so its
+        // plugin list is immutable for the lifetime of the child process.
+        // Only builtins belong here. Native directory discovery watches the
+        // generated plugin directories and adds/removes them after approval.
+        const entrypoints = [approvalDirectory, workspaceDirectory]
+          .map(id => join(configDir, "plugins", id))
+        client.cliContent = JSON.stringify({ ...settings, plugins: [...(Array.isArray(settings.plugins) ? settings.plugins : []), ...entrypoints] })
+        yield* files.write(client.tuiConfig, client.cliContent + "\n")
         yield* materialize(client, active)
         return client
       })

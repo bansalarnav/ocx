@@ -1,12 +1,12 @@
-import { Mcp } from "@opencode-ai/core/mcp/index"
+import { Mcp } from "@opencode/core/mcp/index"
 import type { SharedDevices } from "./shared-devices"
-import { SessionExecution } from "@opencode-ai/core/session/execution"
-import { Bus } from "@opencode-ai/core/bus"
-import { SdkPlugins } from "@opencode-ai/core/plugin/sdk"
-import { define } from "@opencode-ai/plugin/effect/plugin"
-import { ServerFetch } from "@opencode-ai/server/fetch"
-import { ServerWorkerd } from "@opencode-ai/server/workerd"
-import { makeGlobalNode } from "@opencode-ai/util/effect/app-node"
+import { SessionExecution } from "@opencode/core/session/execution"
+import { Bus } from "@opencode/core/bus"
+import { SdkPlugins } from "@opencode/core/plugin/sdk"
+import { define } from "@opencode/plugin/effect/plugin"
+import { ServerFetch } from "@opencode/server/fetch"
+import { ServerWorkerd } from "@opencode/server/workerd"
+import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { Context, Effect, Exit, Layer, RcRef, Scope } from "effect"
 import { attempt, evaluate, type OperationError } from "@ocx/protocol/errors"
 import { deviceMcpServers, type DeviceMcpEnv } from "./device-mcps"
@@ -16,6 +16,9 @@ import { makeLivePluginRegistry } from "./plugin-manager/registry"
 import { makeQuickJSPlugin } from "./plugin-manager/quickjs"
 import { finalizeWithResponse } from "./response-lifecycle"
 import type { InstanceConfigStore } from "./instance-config"
+import type { WorkspaceManager } from "./remote/manager"
+import { remoteReplacements, remoteWorkspacePlugin } from "./remote/adapter"
+import { remoteEnvironmentReplacements, remoteCheckpointPlugin } from "./remote/environment"
 
 export interface HostEnv extends DeviceMcpEnv {
   OPENCODE_PASSWORD?: string
@@ -28,12 +31,12 @@ export class Host extends Context.Service<
   }
 >()("ocx/Host") {}
 
-const deviceToolsOnly = define({
+const deviceToolsOnly = (workspaces?: WorkspaceManager) => define({
   id: "device-tools-only",
-  effect: (context) =>
-    context.tool.transform((tools) => {
-      for (const id of ["read", "write", "edit", "patch", "glob", "grep", "shell"]) tools.remove(id)
-    }),
+  effect: (context) => context.session.hook("context", event => Effect.promise(async () => {
+    if (workspaces && await workspaces.forSession(event.sessionID)) return
+    for (const id of ["read", "write", "edit", "patch", "glob", "grep", "shell"]) delete event.tools[id]
+  })),
 })
 
 export const hostLayer = (
@@ -42,6 +45,7 @@ export const hostLayer = (
   instanceConfig: InstanceConfigStore,
   observe: Bus.Subscriber,
   devices?: SharedDevices,
+  workspaces?: WorkspaceManager,
 ) =>
   Layer.effect(
     Host,
@@ -56,8 +60,12 @@ export const hostLayer = (
             }),
           ),
         )
-        const registry = makeLivePluginRegistry([deviceToolsOnly])
+        const registry = makeLivePluginRegistry([deviceToolsOnly(workspaces)])
         yield* registry.upsert(makePluginManager(store, registry))
+        if (workspaces) {
+          yield* registry.upsert(remoteWorkspacePlugin(workspaces))
+          yield* registry.upsert(remoteCheckpointPlugin(workspaces))
+        }
         for (const plugin of yield* store.list) {
           if (
             plugin.enabled &&
@@ -97,6 +105,8 @@ export const hostLayer = (
             SdkPlugins.node.replace(sdk),
             SessionExecution.node.replace(executionNode),
             ...(devices ? [Mcp.node.replace(devices.node)] : []),
+            ...(workspaces ? remoteReplacements(workspaces) : []),
+            ...(workspaces ? remoteEnvironmentReplacements(workspaces) : []),
           ],
         })
         if (!execution) return yield* Effect.die("OpenCode execution service was not initialized")

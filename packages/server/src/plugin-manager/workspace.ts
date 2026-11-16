@@ -74,12 +74,12 @@ export const inspectPluginWorkspace = (workspace: PluginWorkspace) => {
   }
   if (tuiEntry !== undefined) {
     const source = files[tuiEntry]!
-    if (!source.includes("@opencode-ai/plugin/tui"))
-      throw new Error("tui.tsx must import @opencode-ai/plugin/tui")
+    if (!source.includes("@opencode/plugin/tui") && !source.includes("@opencode-ai/plugin/tui"))
+      throw new Error("tui.tsx must import @opencode/plugin/tui")
     if (
-      !/import\s*\{[^}]*\bPlugin\b[^}]*\}\s*from\s*["']@opencode-ai\/plugin\/tui["']/.test(source)
+      !/import\s*\{[^}]*\bPlugin\b[^}]*\}\s*from\s*["']@opencode(?:-ai)?\/plugin\/tui["']/.test(source)
     ) {
-      throw new Error("tui.tsx must use the named Plugin export from @opencode-ai/plugin/tui")
+      throw new Error("tui.tsx must use the named Plugin export from @opencode/plugin/tui")
     }
     if (
       !/\bPlugin\.define\s*\(/.test(source) ||

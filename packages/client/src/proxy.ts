@@ -2,7 +2,7 @@ import { createServer } from "node:http"
 import { randomBytes, timingSafeEqual } from "node:crypto"
 import { Context, Effect, Layer } from "effect"
 import { NodeHttpServer } from "@effect/platform-node"
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
+import { HttpServerRequest, HttpServerResponse } from "effect/http"
 import { Transport } from "./transport"
 
 export class Proxy extends Context.Service<
@@ -38,7 +38,7 @@ export class Proxy extends Context.Service<
           ),
         ),
       )
-      if (server.address._tag !== "TcpAddress") return yield* Effect.die("Expected a TCP listener")
+      if (server.address._tag !== "InetAddressV4") return yield* Effect.die("Expected an IPv4 TCP listener")
       return Proxy.of({ origin: `http://127.0.0.1:${server.address.port}`, password })
     }),
   )

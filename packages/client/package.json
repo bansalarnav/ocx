@@ -2,15 +2,16 @@
   "name": "@ocx/client",
   "private": true,
   "type": "module",
+  "exports": { ".": "./index.ts", "./tui": "./tui.ts" },
   "dependencies": {
-    "effect": "4.0.0-rc.112",
+    "effect": "4.1.0",
     "jsonc-parser": "3.3.1",
-    "@opencode-ai/plugin": "0.0.0-beta-18866",
-    "@opentui/core": "0.5.9",
-    "@opentui/solid": "0.5.9",
-    "solid-js": "1.9.15",
+    "@opencode/plugin": "2.3.0",
+    "@opentui/core": "0.8.4",
+    "@opentui/solid": "0.8.4",
+    "solid-js": "1.9.17",
     "@ocx/protocol": "workspace:*",
-    "@effect/platform-node": "4.0.0-rc.112",
+    "@effect/platform-node": "4.1.0",
     "ws": "8.21.0"
   },
   "devDependencies": {

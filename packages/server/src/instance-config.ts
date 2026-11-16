@@ -1,4 +1,4 @@
-import { Config } from "@opencode-ai/schema/config"
+import { Config } from "@opencode/schema/config"
 import { Effect, Schema } from "effect"
 import { parse, printParseErrorCode, type ParseError } from "jsonc-parser"
 import { attempt, evaluate, OperationError } from "@ocx/protocol/errors"
@@ -12,7 +12,6 @@ const encoder = new TextEncoder()
 const decode = Schema.decodeUnknownSync(Config.Info, {
   errors: "all",
   onExcessProperty: "error",
-  propertyOrder: "original",
 })
 
 export interface ParsedInstanceConfig {

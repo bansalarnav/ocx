@@ -143,7 +143,7 @@ export const loadModule = async (source: string): Promise<LoadedModule> => {
   runtime.setMaxStackSize(1024 * 1024)
   runtime.setInterruptHandler(() => Date.now() > (deadlines.get(runtime) ?? 0))
   runtime.setModuleLoader((name) => {
-    if (name === "@opencode-ai/plugin") return pluginModule
+    if (name === "@opencode/plugin" || name === "@opencode-ai/plugin") return pluginModule
     return { error: new Error(`Unsupported import: ${name}`) }
   })
   const vm = runtime.newContext()

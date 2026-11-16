@@ -16,7 +16,7 @@ At least one entrypoint is required. If both entrypoints exist, both must use th
 Server code uses the normal Promise plugin format:
 
 \`\`\`ts
-import { Plugin } from "@opencode-ai/plugin"
+import { Plugin } from "@opencode/plugin"
 
 export default Plugin.define({
   id: "hello",
@@ -48,7 +48,7 @@ The server runs the bundled module in QuickJS. The current context bridge implem
 TUI code uses the normal TUI plugin format:
 
 \`\`\`tsx
-import { Plugin } from "@opencode-ai/plugin/tui"
+import { Plugin } from "@opencode/plugin/tui"
 
 export default Plugin.define({
   id: "hello",
@@ -63,7 +63,7 @@ export default Plugin.define({
 })
 \`\`\`
 
-The pinned client API uses the named \`Plugin\` export and \`Plugin.define({ id, setup })\`. There is no default export from \`@opencode-ai/plugin/tui\`. Register UI with \`ctx.ui.slot(...)\`. Supported slots include \`app\`, \`home.footer\`, \`prompt.footer\`, \`prompt.footer.status\`, \`prompt.footer.file\`, \`session.composer.top\`, \`sidebar.content\`, and \`sidebar.footer\`. To add content inside the existing right sidebar, append to \`sidebar.content\`. Use \`ctx.ui.toast.show({ variant, message })\` for toasts.
+The pinned client API uses the named \`Plugin\` export and \`Plugin.define({ id, setup })\`. There is no default export from \`@opencode/plugin/tui\`. Register UI with \`ctx.ui.slot(...)\`. Supported slots include \`app\`, \`home.footer\`, \`prompt.footer\`, \`prompt.footer.status\`, \`prompt.footer.file\`, \`session.composer.top\`, \`sidebar.content\`, and \`sidebar.footer\`. To add content inside the existing right sidebar, append to \`sidebar.content\`. Use \`ctx.ui.toast.show({ variant, message })\` for toasts.
 
 The local TUI API also includes \`ctx.keymap\`, \`ctx.renderer\`, \`ctx.data\`, \`ctx.client\`, \`ctx.storage\`, themes, attention notifications, and Markdown renderers. The server bundles and stores \`tui.tsx\`. Connected \`ocx\` clients ask for local approval, verify the artifact, and load it. Later edits hot-reload on every connected and approving client. Return cleanup functions from registrations so the previous version can be removed cleanly.
 

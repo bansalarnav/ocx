@@ -91,7 +91,10 @@ export const bundlePluginFiles = Effect.fn("bundlePluginFiles")(function* (
         sourcemap: false,
         target: "es2022",
         conditions: ["workerd", "worker", "browser", "import", "default"],
-        virtualModules: { "@opencode-ai/plugin": serverPluginVirtualModule },
+        virtualModules: {
+          "@opencode/plugin": serverPluginVirtualModule,
+          "@opencode-ai/plugin": serverPluginVirtualModule,
+        },
         define: { "process.env.NODE_ENV": '"production"' },
       }),
     )
@@ -115,6 +118,7 @@ export const bundlePluginFiles = Effect.fn("bundlePluginFiles")(function* (
         jsxImportSource: "@opentui/solid",
         conditions: ["browser", "import", "default"],
         externals: [
+          "@opencode/plugin/tui",
           "@opencode-ai/plugin/tui",
           "@opentui/core",
           "@opentui/solid",

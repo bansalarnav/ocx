@@ -1,4 +1,4 @@
-export const ocxLoaderSource = `import { Plugin } from "@opencode-ai/plugin/tui"
+export const ocxLoaderSource = `import { Plugin } from "@opencode/plugin/tui"
 import { readFile, rename, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 

@@ -1,5 +1,5 @@
 import { deviceName, devicePrefix, type SharedDevice } from "@ocx/protocol/device"
-import { Mcp } from "@opencode-ai/core/mcp/index"
+import { Mcp } from "@opencode/core/mcp/index"
 import { Context, Effect, Layer } from "effect"
 import { deviceMcpServers } from "./device-mcps"
 

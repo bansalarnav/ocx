@@ -6,13 +6,13 @@ import {
   type PluginWorkspace,
 } from "./workspace"
 export { globPattern, type PluginWorkspace } from "./workspace"
-import { Agent } from "@opencode-ai/schema/agent"
-import type { Model } from "@opencode-ai/schema/model"
-import type { Location } from "@opencode-ai/schema/location"
-import type { SessionMessage } from "@opencode-ai/schema/session-message"
-import { Tool } from "@opencode-ai/schema/tool"
+import { Agent } from "@opencode/schema/agent"
+import type { Model } from "@opencode/schema/model"
+import type { Location } from "@opencode/schema/location"
+import type { SessionMessage } from "@opencode/schema/session-message"
+import { Tool } from "@opencode/schema/tool"
 import { Effect, Deferred, Result, Cause, Schema } from "effect"
-import { define } from "@opencode-ai/plugin/effect/plugin"
+import { define } from "@opencode/plugin/effect/plugin"
 import { evaluate, OperationError } from "@ocx/protocol/errors"
 import type { PluginStoreService } from "./store"
 import { bundlePluginFiles } from "./bundler"
@@ -20,7 +20,7 @@ import { pluginDocs } from "./docs"
 import { inspectPluginSource, makeQuickJSPlugin } from "./quickjs"
 import type { LivePluginRegistry } from "./registry"
 import type { StoredPlugin } from "./types"
-const workspaceToolNames = new Set(["read", "write", "edit", "remove", "glob", "grep"])
+const workspaceToolNames = new Set(["plugin_workspace_read", "plugin_workspace_write", "plugin_workspace_edit", "plugin_workspace_remove", "plugin_workspace_glob", "plugin_workspace_grep"])
 const authorAllowedTools = new Set([...workspaceToolNames, "webfetch", "websearch", "question"])
 export type SessionModel = Model.Ref
 export const selectedSessionModel = (session: { model?: SessionModel }): SessionModel => {
@@ -32,7 +32,7 @@ export const selectedSessionModel = (session: { model?: SessionModel }): Session
 const text = (content: unknown) => ({
   content: typeof content === "string" ? content : JSON.stringify(content, null, 2),
 })
-const authorSystem = `You are the plugin-author agent. You work in a private virtual filesystem containing one ordinary OpenCode plugin project. Use read, write, edit, remove, glob, and grep exactly as you would in a local repository. Never emit a file map or plugin JSON payload. The caller automatically validates, bundles, stores, and activates the workspace after you finish. If an automated check fails, you will receive the error and must fix the files.
+const authorSystem = `You are the plugin-author agent. You work in a private virtual filesystem containing one ordinary OpenCode plugin project. Use plugin_workspace_read, plugin_workspace_write, plugin_workspace_edit, plugin_workspace_remove, plugin_workspace_glob, and plugin_workspace_grep to manage files. These tools operate only on your private plugin project, not the user's checkout. Never emit a file map or plugin JSON payload. The caller automatically validates, bundles, stores, and activates the workspace after you finish. If an automated check fails, you will receive the error and must fix the files.
 
 ${pluginDocs}
 
@@ -253,7 +253,7 @@ export const makePluginManager = (store: PluginStoreService, registry: LivePlugi
       })
       yield* context.tool.transform((tools) => {
         tools.add({
-          name: "read",
+          name: "plugin_workspace_read",
           description: "Read a text file from the current plugin workspace.",
           input: Schema.Struct({ path: Schema.String }),
           options: { codemode: false },
@@ -265,7 +265,7 @@ export const makePluginManager = (store: PluginStoreService, registry: LivePlugi
           }),
         })
         tools.add({
-          name: "write",
+          name: "plugin_workspace_write",
           description:
             "Create or completely overwrite a text file in the current plugin workspace.",
           input: Schema.Struct({ path: Schema.String, content: Schema.String }),
@@ -277,7 +277,7 @@ export const makePluginManager = (store: PluginStoreService, registry: LivePlugi
           }),
         })
         tools.add({
-          name: "edit",
+          name: "plugin_workspace_edit",
           description: "Replace exact text in a plugin workspace file.",
           input: Schema.Struct({
             path: Schema.String,
@@ -305,7 +305,7 @@ export const makePluginManager = (store: PluginStoreService, registry: LivePlugi
           }),
         })
         tools.add({
-          name: "remove",
+          name: "plugin_workspace_remove",
           description: "Remove a file from the current plugin workspace.",
           input: Schema.Struct({ path: Schema.String }),
           options: { codemode: false },
@@ -318,7 +318,7 @@ export const makePluginManager = (store: PluginStoreService, registry: LivePlugi
           }),
         })
         tools.add({
-          name: "glob",
+          name: "plugin_workspace_glob",
           description: "List plugin workspace files matching a glob pattern such as **/*.ts.",
           input: Schema.Struct({ pattern: Schema.optional(Schema.String) }),
           options: { codemode: false },
@@ -333,7 +333,7 @@ export const makePluginManager = (store: PluginStoreService, registry: LivePlugi
           }),
         })
         tools.add({
-          name: "grep",
+          name: "plugin_workspace_grep",
           description: "Search plugin workspace files with a JavaScript regular expression.",
           input: Schema.Struct({ pattern: Schema.String, path: Schema.optional(Schema.String) }),
           options: { codemode: false },

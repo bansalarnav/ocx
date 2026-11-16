@@ -2,6 +2,7 @@ node_modules/
 .wrangler/
 dist/
 worker-configuration.d.ts
+packages/server/src/remote/*.generated.txt
 
 # Local Worker secrets
 .dev.vars

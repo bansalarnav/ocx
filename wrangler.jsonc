@@ -5,7 +5,13 @@
   "minify": true,
   "compatibility_date": "2026-08-26",
   "compatibility_flags": ["nodejs_compat"],
+  "artifacts": [{ "binding": "ARTIFACTS", "namespace": "ocx" }],
   "rules": [
+    {
+      "type": "Text",
+      "globs": ["**/*.generated.txt"],
+      "fallthrough": true
+    },
     {
       "type": "CompiledWasm",
       "globs": ["**/*.wasm"],

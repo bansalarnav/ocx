@@ -74,7 +74,7 @@ export const makeTuiRegistryEvents = (onPublish?: () => void): TuiRegistryEvents
   }
 }
 
-const minimumOpenCodeVersion = "0.0.0-beta-18371"
+const minimumOpenCodeVersion = "2.3.0"
 
 const sha256 = (content: string) =>
   attempt("Hash plugin", () =>

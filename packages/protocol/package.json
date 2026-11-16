@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "effect": "4.0.0-rc.112"
+    "effect": "4.1.0"
   },
   "exports": {
     "./*": "./src/*.ts"

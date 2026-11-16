@@ -1,6 +1,6 @@
-import { Bus } from "@opencode-ai/core/bus"
-import { SdkPlugins } from "@opencode-ai/core/plugin/sdk"
-import type { Plugin } from "@opencode-ai/plugin/effect/plugin"
+import { Bus } from "@opencode/core/bus"
+import { SdkPlugins } from "@opencode/core/plugin/sdk"
+import type { Plugin } from "@opencode/plugin/effect/plugin"
 import { Effect, Layer } from "effect"
 
 export interface LivePluginRegistry {
