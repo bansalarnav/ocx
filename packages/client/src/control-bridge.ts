@@ -5,6 +5,8 @@ import { ApiError, RemoteAPI } from "./remote-api"
 import { parseRemoteArguments, runRemoteCommand, type RemoteLaunch } from "./remote"
 import { validID, workspacePrefix, type Workspace } from "@ocx/protocol/workspaces"
 import { deviceName } from "./device-name"
+import { cloudCheckout, groupProjects, projectPrefix, type Project } from "@ocx/protocol/projects"
+import { ProjectCatalog } from "./project-catalog"
 
 interface Connection { server: string; password?: string }
 export interface ControlBridgeOptions {
@@ -47,6 +49,8 @@ export async function createControlBridge(options: ControlBridgeOptions) {
   const timers = new Set<ReturnType<typeof setTimeout>>()
   type Summary = Pick<Journal, "id" | "direction" | "stage" | "workspaceID" | "sourceSessionID" | "directory">
   const summaryCache = new Map<string, { stamp: string; summary: Summary }>()
+  let catalog: Promise<ProjectCatalog> | undefined
+  const checkouts = () => catalog ??= ProjectCatalog.open(directory)
 
   const redact = (message: string) => {
     for (const password of [remote?.password, options.local.password]) {
@@ -156,6 +160,7 @@ export async function createControlBridge(options: ControlBridgeOptions) {
       workspace: text(input, "workspaceID"), session: text(input, "sessionID"), transfer: text(input, "transferID"),
       directory: text(input, "directory"), source: text(input, "source"), branch: text(input, "branch"), newBranch: text(input, "newBranch"),
       prompt: text(input, "prompt"), name: text(input, "name"), title: text(input, "title"), body: text(input, "body"), base: text(input, "base"),
+      projectID: text(input, "projectID"),
       abort: input.abort === true,
     })
     if (input.model !== undefined) {
@@ -204,6 +209,71 @@ export async function createControlBridge(options: ControlBridgeOptions) {
 
   const action = async (input: Record<string, unknown>) => {
     const name = text(input, "action", true)!
+    if (name === "projects") {
+      const catalog = await checkouts()
+      await catalog.refresh()
+      const current = mode === "local" ? await catalog.discover(text(input, "directory") ?? process.cwd()) : undefined
+      let projects: Project[] = [], offline = false
+      if (remote && connected) {
+        try {
+          const projectAPI = new RemoteAPI(remote.server, remote.password, (input, init = {}) => requestFetch(input, {
+            ...init, signal: AbortSignal.any([...(init.signal ? [init.signal] : []), AbortSignal.timeout(5000)]),
+          }))
+          for (const checkout of catalog.list()) await projectAPI.request(`${projectPrefix}/checkouts`, "POST", checkout)
+          projects = (await projectAPI.request<{ projects: Project[] }>(projectPrefix)).projects
+        } catch { offline = true }
+      } else if (remote) offline = true
+      const all = new Map(projects.flatMap(p => p.checkouts).map(c => [c.id, c]))
+      for (const checkout of catalog.list()) all.set(checkout.id, checkout)
+      return { projects: groupProjects([...all.values()]), currentCheckoutID: current?.id, deviceID: catalog.deviceID, offline }
+    }
+    if (name === "createCheckout") {
+      const { workspace } = await api().request<{ workspace: Workspace }>(workspacePrefix, "POST", {
+        id: randomUUID(), source: text(input, "source", true), name: text(input, "name", true),
+        branch: text(input, "branch"), newBranch: text(input, "newBranch"),
+      })
+      return { checkout: cloudCheckout(workspace) }
+    }
+    if (name === "checkoutSessions") {
+      if (text(input, "workspaceID")) return api().request(`${workspacePrefix}/${validID(text(input, "workspaceID", true)!)}/sessions`)
+      const checkout = (await checkouts()).get(text(input, "checkoutID", true)!)
+      // Refresh branch and verify the directory still exists before opening it.
+      await (await checkouts()).discover(checkout.directory)
+      const sessions: any[] = []
+      let cursor: string | undefined
+      do {
+        const page = await local.request(`/api/session?directory=${encodeURIComponent(checkout.directory)}&parentID=null&archived=false&limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`)
+        sessions.push(...page.data); cursor = page.cursor?.next
+      } while (cursor)
+      return { sessions }
+    }
+    if (name === "createConversation") {
+      let model: { providerID: string; id: string } | undefined
+      if (input.model !== undefined) {
+        if (!input.model || typeof input.model !== "object") throw new Error("Invalid model selection")
+        model = { providerID: text(input.model as any, "providerID", true)!, id: text(input.model as any, "id", true)! }
+      }
+      const title = text(input, "title"), prompt = text(input, "prompt")
+      const workspaceID = text(input, "workspaceID")
+      if (workspaceID) {
+        const { session } = await api().request(`${workspacePrefix}/${validID(workspaceID)}/sessions`, "POST", { title, prompt, model })
+        return ready({ server: api().origin, password: remote?.password, sessionID: session.id, binary: options.binary })
+      }
+      const checkout = (await checkouts()).get(text(input, "checkoutID", true)!)
+      await (await checkouts()).discover(checkout.directory)
+      const { data: session } = await local.request("/api/session", "POST", { title, model, location: { directory: checkout.directory } })
+      if (prompt) await local.request(`/api/session/${validID(session.id)}/prompt`, "POST", { text: prompt })
+      return ready({ server: local.origin, password: options.local.password, sessionID: session.id, directory: checkout.directory, binary: options.binary, local: true })
+    }
+    if (name === "openConversation") {
+      const workspaceID = text(input, "workspaceID")
+      if (workspaceID) return execute("attach", input)
+      const checkout = (await checkouts()).get(text(input, "checkoutID", true)!)
+      const sessionID = validID(text(input, "sessionID", true)!)
+      const { data: session } = await local.request(`/api/session/${sessionID}`)
+      if (session.location.directory !== checkout.directory) throw new Error("Conversation does not belong to this checkout")
+      return ready({ server: local.origin, password: options.local.password, sessionID, directory: checkout.directory, binary: options.binary, local: true })
+    }
     if (name === "configure") {
       const connection = validateConnection(input)
       await probe(connection)
@@ -237,7 +307,11 @@ export async function createControlBridge(options: ControlBridgeOptions) {
     if (name === "githubStatus") return api().request("/api/ocx/github/status")
     if (name === "githubLoginStart") return api().request("/api/ocx/github/login", "POST", {})
     if (name === "githubLoginPoll") return api().request("/api/ocx/github/poll", "POST", { device_code: text(input, "device_code", true) })
-    if (["new", "send", "receive", "recover"].includes(name)) return execute(name, input)
+    if (name === "send") {
+      const checkout = await (await checkouts()).discover(text(input, "directory") ?? process.cwd())
+      return execute(name, { ...input, projectID: checkout.projectID })
+    }
+    if (["new", "receive", "recover"].includes(name)) return execute(name, input)
     if (name === "switch") return execute("attach", input)
     if (name === "switchLocal") {
       const sessionID = text(input, "sessionID")
@@ -312,7 +386,7 @@ export async function createControlBridge(options: ControlBridgeOptions) {
               pr: "Preparing your pull request…", githubLoginStart: "Starting GitHub sign-in…", githubLoginPoll: "Waiting for GitHub sign-in…", activate: "Opening your thread…",
             }
             progress = labels[name] ?? "Preparing your request…"; error = undefined; activeTransfer = undefined
-            if (["new", "send", "receive", "recover", "switch", "switchLocal"].includes(name)) pending = undefined
+            if (["new", "send", "receive", "recover", "switch", "switchLocal", "createConversation", "openConversation"].includes(name)) pending = undefined
           }
           const data = await action(input)
           if (!readonly && !["new", "send", "receive", "recover"].includes(name)) progress = name === "activate" ? "Opening your thread…" : "Ready."

@@ -7,6 +7,8 @@ import checkpointRuntime from "./checkpoint-runtime.generated.txt"
 import { Patch } from "@opencode/util/patch"
 import { Result } from "effect"
 import { githubToken, type GitHubEnv } from "./github"
+import { cloudCheckout, groupProjects, repositoryIdentity, type ProjectCheckout } from "@ocx/protocol/projects"
+import { CheckoutWriters } from "./writers"
 
 export interface WorkspaceEnv extends ComputeEnv, GitHubEnv {
   ARTIFACTS?: ArtifactBinding
@@ -48,6 +50,7 @@ print(json.dumps(result))
 
 export class WorkspaceManager {
   private readonly locks = new Map<string, Promise<unknown>>()
+  private readonly writers = new CheckoutWriters()
   private compute?: Pick<Compute, "create" | "run" | "pause" | "url">
   constructor(readonly storage: WorkspaceStorage, readonly env: WorkspaceEnv, readonly api: OpenCodeAPI, private readonly dependencies: WorkspaceDependencies = {}) {}
 
@@ -58,6 +61,57 @@ export class WorkspaceManager {
   }
   private machine() { return this.compute ??= this.dependencies.compute ?? new Compute(this.env) }
   async list() { return [...(await this.storage.list<ManagedWorkspace>({ prefix: "ocx/workspaces/" })).values()] }
+  async projects() {
+    const devices = [...(await this.storage.list<ProjectCheckout>({ prefix: "ocx/device-checkouts/" })).values()]
+    return groupProjects([...devices, ...(await this.list()).map(cloudCheckout)])
+  }
+  async registerCheckout(input: ProjectCheckout) {
+    if (input.location !== "device" || !input.deviceID || !input.hostname || typeof input.directory !== "string" || !input.directory || input.directory.length > 4096 ||
+      typeof input.projectID !== "string" || input.projectID.length > 1024 ||
+      ![input.name, input.projectName, input.hostname].every(value => typeof value === "string" && value.length <= 256))
+      throw new Error("Invalid device checkout")
+    validID(input.id); validID(input.deviceID)
+    if (!input.id.startsWith(`device-${input.deviceID}-`)) throw new Error("Checkout identity does not match device")
+    const repo = input.source ? repositoryIdentity(input.source) : undefined
+    if (input.source && (!repo || repo.id !== input.projectID)) throw new Error("Checkout does not match project repository")
+    const checkout: ProjectCheckout = {
+      id: input.id, projectID: input.projectID, projectName: repo?.name ?? input.projectName, name: input.name,
+      source: repo?.source, location: "device", deviceID: input.deviceID, hostname: input.hostname,
+      directory: input.directory, branch: typeof input.branch === "string" ? input.branch : undefined,
+      state: "unavailable", updatedAt: Date.now(),
+    }
+    await this.storage.put(`ocx/device-checkouts/${checkout.id}`, checkout)
+    return checkout
+  }
+  async sessions(id: string) {
+    const workspace = await this.get(id)
+    const sessions: any[] = []
+    let cursor: string | undefined
+    do {
+      const page = await this.api(`/api/session?directory=${encodeURIComponent(workspace.root)}&parentID=null&archived=false&limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`)
+      sessions.push(...page.data)
+      cursor = page.cursor?.next
+    } while (cursor)
+    if (workspace.conversationCount !== sessions.length || sessions.some(s => !workspace.sessionIDs.includes(s.id))) await this.update(id, current => {
+      current.sessionIDs = [...new Set([...current.sessionIDs, ...sessions.map(s => s.id)])]
+      current.conversationCount = sessions.length
+    })
+    return sessions
+  }
+  async claimEditing(sessionID: string, signal: AbortSignal) {
+    const workspace = await this.forSession(sessionID)
+    if (!workspace) return
+    let family = sessionID
+    const seen = new Set<string>()
+    while (!seen.has(family)) {
+      seen.add(family)
+      const session = (await this.api(`/api/session/${validID(family)}`)).data
+      if (!session.parentID) break
+      family = session.parentID
+    }
+    await this.writers.acquire(workspace.id, family, sessionID, async () => new Set(Object.keys((await this.api("/api/session/active")).data)), signal)
+  }
+  async releaseEditing(sessionID: string) { this.writers.release(sessionID) }
   async get(id: string) {
     const workspace = await this.storage.get<ManagedWorkspace>(key(id))
     if (!workspace) throw new Error("Workspace not found")
@@ -106,6 +160,7 @@ export class WorkspaceManager {
 
   /** Allocate before uploading a local checkpoint. No compute is started yet. */
   async allocate(input: CreateWorkspace) {
+    if (input.projectID !== undefined && (typeof input.projectID !== "string" || input.projectID.length > 1024)) throw new Error("Invalid project identity")
     const id = input.id ? validID(input.id) : crypto.randomUUID()
     return this.exclusive(`allocate:${id}`, async () => {
     const existing = await this.storage.get<Workspace>(key(id))
@@ -121,10 +176,11 @@ export class WorkspaceManager {
     }
     const workspace: Workspace = {
       id, repository, remote: access.url, root: `/tmp/ocx-workspaces/${id}/repo`,
-      name: input.name ?? input.source ?? "Remote workspace", branch: input.branch,
-      source,
-      state: "preparing", generation: 0, sessionIDs: [], createdAt: Date.now(), updatedAt: Date.now(),
+      name: input.name ?? input.source ?? "Remote workspace", branch: input.newBranch ?? input.branch,
+      source, projectID: source ? repositoryIdentity(source)?.id : input.projectID,
+      state: "preparing", generation: 0, sessionIDs: [], conversationCount: 0, createdAt: Date.now(), updatedAt: Date.now(),
     }
+    if (input.newBranch) (workspace as ManagedWorkspace).provisioning = { source, sourceBranch: input.branch, newBranch: input.newBranch }
     await this.save(workspace)
     return { workspace, access }
     })
@@ -225,12 +281,15 @@ export class WorkspaceManager {
   }
 
   async createSession(id: string, input: { title?: string; prompt?: string; model?: unknown } = {}) {
+    const initial = await this.get(id)
+    if (["preparing", "failed"].includes(initial.state)) await this.provision(id)
     return this.exclusive(id, async () => {
     const workspace = await this.get(id)
     if (workspace.state !== "ready" && workspace.state !== "paused") throw new Error("Workspace is not ready")
     const result = await this.api("/api/session", "POST", { title: input.title, model: input.model, location: { directory: workspace.root } })
     await this.update(id, current => {
       if (!current.sessionIDs.includes(result.data.id)) current.sessionIDs.push(result.data.id)
+      if (current.conversationCount !== undefined) current.conversationCount++
     })
     if (input.prompt) await this.api(`/api/session/${result.data.id}/prompt`, "POST", { text: input.prompt })
     return result.data

@@ -10,6 +10,16 @@ It opens local OpenCode with your existing server configuration, providers, conv
 
 The footer shows your device's hostname or `remote`. Open **Remote** in the command palette, or type `/remote`, for all remote actions.
 
+## Projects, checkouts, and conversations
+
+Open OpenCode in any directory as usual. **Projects and checkouts**, also available as `/checkouts`, discovers the current Git checkout and groups it with cloud checkouts of the same repository. HTTPS and SSH GitHub remotes identify the same project. Plain directories work without Git or a project setup wizard. Directories you browse are remembered on this device. OpenCode's built-in `/projects` command remains available separately.
+
+Choose a project, then a checkout, then a conversation. Every project can have several cloud checkouts and each checkout can have several independent conversations. **New conversation in this checkout**, or `/conversation-new`, reuses the current directory, branch, files, dependencies, and sandbox. Conversations have separate history but share working files. On cloud checkouts, mutating agent tools wait while another conversation family owns the checkout's editing turn; subagents in the same family can cooperate. Independent checkouts execute separately.
+
+Checkout metadata is registered with your connected cloud server so checkouts on different devices can appear under the same project. Registered device checkouts show their hostname. A checkout on another device is listed as unavailable in this client: this version does not remotely execute on another personal device. Device-only conversations continue to run on that device; registering a checkout does not upload its transcripts or files. Project browsing still works for this device when the remote is unavailable.
+
+Opening the picker, listing cloud conversations, and creating a cloud checkout record do not allocate compute. The first conversation provisions its checkout, and subsequent conversations reuse it. Sandboxes keep the existing automatic idle-pause policy. Reading and editing workspace files without waking a sandbox is not implemented yet.
+
 ## Connect once
 
 Choose **Connect a remote**. Enter your Cloudflare OpenCode server URL and password in OpenCode. The launcher checks the connection and remembers it privately on this device. Its password stays in the launcher; the TUI receives only a temporary loopback capability.
@@ -26,26 +36,31 @@ The source conversation is archived and its checkout stays in place. Cloudflare 
 
 ## Create a remote conversation
 
-Choose **New remote thread** from the Remote menu or command palette.
+Choose **New cloud conversation** from the Remote menu or command palette, or `/remote-new`.
+
+Select a project and an existing cloud checkout to start another conversation there. To create an independent checkout, select **New cloud checkout**. You can also start that flow directly with `/checkout-new`:
 
 1. Select a GitHub repository, or enter a public repository URL.
 2. Choose a new branch or an existing branch.
 3. Pick the base branch and enter a name for a new branch if needed.
-4. Describe the task, or leave it empty to start a conversation.
+4. Give the checkout a name.
+5. Choose **New conversation in this checkout**, then describe the task or leave it empty to start a conversation.
 
-OpenCode prepares the checkout and opens the new remote thread automatically. Every workspace has its own isolated checkout. The current version uses independent clones, not linked Git worktrees.
+OpenCode prepares the checkout when its first conversation is created and opens the thread automatically. Every cloud checkout has its own sandbox. The current version uses independent clones, not linked Git worktrees.
 
 **Connect GitHub** in the same menu displays an authorization URL and code. Authorize in the browser; OpenCode notices completion and you can browse private repositories. No terminal login command is needed.
 
 ## Switch between local and remote work
 
-Choose **Browse remote workspaces**, select a workspace, then select a named thread. It opens in the same terminal. **Back to <hostname>** returns to conversations on your device while the remote task keeps running.
+Choose **Projects and checkouts**, select a project, a checkout, then a named conversation. It opens in the same terminal. **Back to <hostname>** returns to conversations on your device while the remote task keeps running.
 
 The launcher keeps the local backend alive while switching. Upstream's TUI has no public API for replacing its server connection, so the launcher automatically replaces the TUI attachment in the same terminal. Conversations and compute survive that change. The user does not exit and relaunch OpenCode manually. Exiting the launcher leaves a reused local service running and stops a backend it started itself.
 
 ## Continue remotely created work locally
 
 From a remote conversation, choose **Continue on <hostname>**, where the label uses your device's actual hostname. The default destination is an **OpenCode-managed checkout**. Choose **Choose a folder** only if you want a specific new or empty directory. The `/continue-here` command opens the same flow; `/continue-locally` remains an alias.
+
+The handoff moves the checkout and all its registered conversations together, including subagent histories. It freezes execution for that entire checkout, while other cloud checkouts remain available.
 
 The launcher restores the checkout and conversation, transfers ownership, and opens the local thread automatically. Managed checkouts live under `$XDG_DATA_HOME/opencode/workspaces/<workspace>/<transfer>`, or `~/.local/share/opencode/workspaces/...`.
 

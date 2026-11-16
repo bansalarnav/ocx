@@ -131,6 +131,51 @@ test("new, picker, GitHub and activation actions run inside the bridge without e
   expect(reconfigured.value.data.remote.server).toBe("https://replacement.test")
 })
 
+test("projects group the current directory with cloud checkouts and additional conversations reuse the selected checkout", async () => {
+  const dataRoot = await directory(), source = join(dataRoot, "source")
+  await mkdir(source)
+  await exec("git", ["init", "-b", "main", source])
+  await exec("git", ["-C", source, "remote", "add", "origin", "git@github.com:acme/app.git"])
+  const workspace = { id: "cloud-a", name: "Auth", source: "https://github.com/acme/app.git", root: "/cloud/a", state: "ready", branch: "feature", sessionIDs: ["ses_one"], updatedAt: 1 }
+  const registered: any[] = [], paths: string[] = []
+  let conversations = 0
+  const fakeFetch = (async (input, init) => {
+    const request = new Request(input, init), url = new URL(request.url)
+    paths.push(url.pathname)
+    if (url.pathname === "/api/ocx/workspaces") return request.method === "POST"
+      ? response({ workspace: { ...workspace, id: "new-checkout", state: "preparing", sessionIDs: [] }, access: { token: "artifact-secret" } })
+      : response({ workspaces: [workspace] })
+    if (url.pathname === "/api/ocx/projects/checkouts") { registered.push(await request.json()); return response({}) }
+    if (url.pathname === "/api/ocx/projects") return response({ projects: [{ id: "repo:github.com/acme/app", name: "acme/app", checkouts: [{ id: "cloud-a", projectID: "repo:github.com/acme/app", projectName: "acme/app", location: "cloud", directory: "/cloud/a", name: "Auth", state: "ready" }] }] })
+    if (url.pathname === "/api/ocx/workspaces/cloud-a/sessions") return response({ session: { id: `ses_${++conversations}` } })
+    return response({}, 404)
+  }) as typeof fetch
+  const control = await bridge({ dataRoot, binary: "opencode", local: { server: "http://127.0.0.1:4096" }, initialRemote: { server: "https://remote.test", password: "remote-secret" }, fetch: fakeFetch, onSwitch() {} })
+  // Let the normal asynchronous connection probe complete.
+  await new Promise(resolve => setImmediate(resolve))
+  const listed = await control.action({ action: "projects", directory: source })
+  expect(listed.status).toBe(200)
+  expect(listed.value.data.projects).toHaveLength(1)
+  expect(listed.value.data.projects[0].checkouts).toHaveLength(2)
+  expect(registered[0].source).toBe("https://github.com/acme/app.git")
+  expect(registered[0].directory).toBe(source)
+  const checkout = await control.action({ action: "createCheckout", source: workspace.source, name: "Separate checkout", newBranch: "feature/second" })
+  expect(checkout.status).toBe(200)
+  expect(checkout.value.data.checkout.id).toBe("new-checkout")
+  expect(checkout.value.data.checkout.state).toBe("not-started")
+  expect(JSON.stringify(checkout)).not.toContain("artifact-secret")
+  expect(conversations).toBe(0)
+  const before = paths.filter(p => p === "/api/ocx/workspaces").length
+  const first = await control.action({ action: "createConversation", workspaceID: "cloud-a", prompt: "Review authentication" })
+  const second = await control.action({ action: "createConversation", workspaceID: "cloud-a", prompt: "Investigate tests" })
+  expect(first.value.data.launch.sessionID).not.toBe(second.value.data.launch.sessionID)
+  expect(paths.filter(p => p === "/api/ocx/workspaces")).toHaveLength(before)
+  expect(JSON.stringify([listed, first, second])).not.toContain("remote-secret")
+  const foreign = await control.action({ action: "createConversation", checkoutID: "device-other", prompt: "must not run here" })
+  expect(foreign.status).toBe(400)
+  expect(foreign.value.error).toContain("another device")
+})
+
 test("send uses its managed local backend and exposes recoverable journal summaries after a restart", async () => {
   const root = await directory(), dataRoot = join(root, "data"), source = join(root, "source"), artifact = join(root, "artifact.git")
   await mkdir(source)

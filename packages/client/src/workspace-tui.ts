@@ -3,6 +3,7 @@ import type { Workspace } from "@ocx/protocol/workspaces"
 import { createSignal } from "solid-js"
 import { jsx } from "@opentui/solid/jsx-runtime"
 import { deviceName } from "./device-name"
+import { repositoryIdentity, type Project, type ProjectCheckout } from "@ocx/protocol/projects"
 type Context = Parameters<Parameters<typeof Plugin.define>[0]["setup"]>[0]
 
 export interface WorkspaceUIState {
@@ -102,15 +103,48 @@ export function setupWorkspaceUI(ctx: Context, bridge: WorkspaceUIBridge) {
     return configure()
   }
   const listWorkspaces = async () => (await bridge.action<{ workspaces: Workspace[] }>("workspaces")).workspaces
+  const catalog = () => {
+    const route = ctx.ui.router.current()
+    const session = route.type === "session" ? ctx.data.session.get(route.sessionID) : undefined
+    return bridge.action<{ projects: Project[]; deviceID: string; currentCheckoutID?: string; offline?: boolean }>("projects", { directory: session?.location.directory ?? process.cwd() })
+  }
+  const target = (checkout: ProjectCheckout) => checkout.location === "cloud" ? { workspaceID: checkout.id } : { checkoutID: checkout.id }
+  const newConversation = async (checkout: ProjectCheckout) => {
+    if (checkout.location === "cloud" && !await connected()) return
+    const prompt = await ctx.ui.dialog.prompt({ title: "New conversation", description: `Files are shared with other conversations in ${checkout.name}. Use a new checkout for independent changes.`, placeholder: "Describe the task, or leave empty to start a conversation" })
+    if (prompt === undefined) return
+    const model = ctx.ui.model.current()
+    await perform("createConversation", { ...target(checkout), prompt, model: model ? { providerID: model.providerID, id: model.modelID } : undefined }, `Opening a conversation in ${checkout.name}…`)
+  }
+  const openCheckout = async (checkout: ProjectCheckout) => {
+    const { sessions } = await bridge.action<{ sessions: { id: string; title?: string }[] }>("checkoutSessions", target(checkout))
+    const route = ctx.ui.router.current()
+    const selected = await ctx.ui.dialog.select({ title: `${checkout.name} · ${checkout.location === "cloud" ? "Cloud" : checkout.hostname}`, current: route.type === "session" ? route.sessionID : undefined, options: [
+      { title: "New conversation in this checkout", value: "__new", disabled: checkout.location === "cloud" && ["local", "transferring"].includes(checkout.state), description: "Reuse this branch, files, and environment" },
+      ...sessions.map(s => ({ title: s.title ?? "Untitled conversation", value: s.id })),
+    ] })
+    if (selected === "__new") await newConversation(checkout)
+    else if (selected) await perform("openConversation", { ...target(checkout), sessionID: selected }, "Opening the conversation…")
+  }
+  const chooseCheckout = async (project: Project, deviceID: string, cloudOnly = false) => {
+    const checkouts = project.checkouts.filter(c => !cloudOnly || c.location === "cloud")
+    return ctx.ui.dialog.select<ProjectCheckout | "__new">({ title: `${project.name} · Checkouts`, options: [
+      ...checkouts.map(c => ({ title: c.name, value: c, disabled: c.location === "device" ? c.deviceID !== deviceID : cloudOnly && ["local", "transferring"].includes(c.state),
+        description: `${c.location === "cloud" ? "Cloud" : c.hostname} · ${c.branch ?? "directory"} · ${c.state}${c.sessionCount === undefined ? "" : ` · ${c.sessionCount} conversations`}` })),
+      { title: "New cloud checkout", value: "__new" as const, description: "A separate working directory and branch" },
+    ] })
+  }
   const browse = async () => {
-    if (!await connected()) return
-    const workspaces = await listWorkspaces()
-    if (!workspaces.length) { await ctx.ui.dialog.alert({ title: "Remote workspaces", message: "No workspaces yet. Choose New remote thread or Continue remotely." }); return }
-    const workspace = await ctx.ui.dialog.select({ title: "Remote workspaces", options: workspaces.map(w => ({ title: w.name, value: w, description: `${w.state} · ${w.branch ?? "checkout"}` })) })
-    if (!workspace) return
-    const result = await bridge.action<{ sessions: { id: string; title?: string }[] }>("sessions", { workspaceID: workspace.id })
-    const sessionID = await ctx.ui.dialog.select({ title: workspace.name, options: result.sessions.map(s => ({ title: s.title ?? "Untitled thread", value: s.id })) })
-    if (sessionID) await perform("switch", { workspaceID: workspace.id, sessionID }, "Opening the remote conversation…")
+    const data = await catalog()
+    const selected = await ctx.ui.dialog.select<Project | "__new">({ title: data.offline ? "Projects · remote unavailable" : "Projects", options: [
+      ...data.projects.map(p => ({ title: p.name, value: p, description: `${p.checkouts.length} checkout${p.checkouts.length === 1 ? "" : "s"}` })),
+      { title: "Add a cloud project", value: "__new" as const, description: "Choose a repository" },
+    ] })
+    if (!selected) return
+    if (selected === "__new") { const checkout = await newCheckout(); if (checkout) await openCheckout(checkout); return }
+    const checkout = await chooseCheckout(selected, data.deviceID)
+    if (checkout === "__new") { const created = await newCheckout(selected); if (created) await openCheckout(created) }
+    else if (checkout) await openCheckout(checkout)
   }
   const github = async () => {
     if (!await connected()) return
@@ -131,17 +165,17 @@ export function setupWorkspaceUI(ctx: Context, bridge: WorkspaceUIBridge) {
     }
     if (!closed) { ctx.ui.dialog.clear(); throw new Error("GitHub authorization expired") }
   }
-  const newThread = async (): Promise<void> => {
+  const newCheckout = async (project?: Project): Promise<ProjectCheckout | undefined> => {
     if (!await connected()) return
     const status = await bridge.action<{ connected: boolean }>("githubStatus")
     const repos: { full_name: string; default_branch?: string; private?: boolean }[] = status.connected ? await bridge.action("repositories") : []
-    const repository = await ctx.ui.dialog.select({ title: "Choose a repository", options: [
+    const repository = project?.source ?? await ctx.ui.dialog.select({ title: "Choose a repository", options: [
       ...repos.map(r => ({ title: r.full_name, value: r.full_name, description: r.private ? "Private repository" : "Repository" })),
       { title: "Enter a repository URL", value: "__url" },
       ...(!status.connected ? [{ title: "Connect GitHub", value: "__github", description: "Browse your repositories" }] : []),
     ] })
     if (!repository) return
-    if (repository === "__github") { await github(); return newThread() }
+    if (repository === "__github") { await github(); return newCheckout(project) }
     const source = repository === "__url" ? await ctx.ui.dialog.prompt({ title: "Repository", placeholder: "owner/repo or HTTPS URL" }) : repository
     if (!source) return
     const checkout = await ctx.ui.dialog.select({ title: "Checkout", options: [
@@ -149,7 +183,7 @@ export function setupWorkspaceUI(ctx: Context, bridge: WorkspaceUIBridge) {
       { title: "Existing branch", value: "existing", description: "Use an existing branch in an isolated checkout" },
     ] })
     if (!checkout) return
-    const repo = repos.find(r => r.full_name === source)
+    const repo = repos.find(r => r.full_name === source || repositoryIdentity(r.full_name.includes("://") ? r.full_name : `https://github.com/${r.full_name}`)?.id === repositoryIdentity(source)?.id)
     const branches: { name: string }[] = repo ? await bridge.action("branches", { repository: source }) : []
     const branch = branches.length
       ? await ctx.ui.dialog.select({ title: checkout === "new" ? "Start from" : "Branch", current: repo?.default_branch, options: branches.map(b => ({ title: b.name, value: b.name })) })
@@ -157,10 +191,40 @@ export function setupWorkspaceUI(ctx: Context, bridge: WorkspaceUIBridge) {
     if (branch === undefined) return
     const newBranch = checkout === "new" ? await ctx.ui.dialog.prompt({ title: "New branch name", value: `agent/task-${Date.now().toString(36)}` }) : undefined
     if (checkout === "new" && !newBranch) return
-    const prompt = await ctx.ui.dialog.prompt({ title: "What should the agent do?", placeholder: "Describe the task, or leave empty to start a conversation" })
-    if (prompt === undefined) return
-    const model = ctx.ui.model.current()
-    await perform("new", { source, branch: branch || undefined, newBranch, prompt, model: model ? { providerID: model.providerID, id: model.modelID } : undefined }, "Preparing your remote checkout…")
+    const name = await ctx.ui.dialog.prompt({ title: "Checkout name", value: newBranch ?? branch ?? "main", description: "Identify this checkout in the project" })
+    if (!name) return
+    const result = await perform("createCheckout", { source, branch: branch || undefined, newBranch, name }, "Saving your cloud checkout…")
+    return result.checkout
+  }
+  const createCheckout = async () => {
+    const data = await catalog()
+    const selected = await ctx.ui.dialog.select<Project | "__new">({ title: "New cloud checkout · Project", options: [
+      ...data.projects.filter(p => p.source).map(p => ({ title: p.name, value: p })),
+      { title: "Choose another repository", value: "__new" as const },
+    ] })
+    if (!selected) return
+    const checkout = await newCheckout(selected === "__new" ? undefined : selected)
+    if (checkout) await openCheckout(checkout)
+  }
+  const newThread = async (): Promise<void> => {
+    const data = await catalog()
+    const selected = await ctx.ui.dialog.select<Project | "__new">({ title: "New cloud conversation · Project", options: [
+      ...data.projects.map(p => ({ title: p.name, value: p })),
+      { title: "Choose another repository", value: "__new" as const },
+    ] })
+    if (!selected) return
+    const checkout = selected === "__new" ? "__new" : await chooseCheckout(selected, data.deviceID, true)
+    if (checkout === "__new") {
+      const created = await newCheckout(selected === "__new" ? undefined : selected)
+      if (created) await newConversation(created)
+    } else if (checkout) await newConversation(checkout)
+  }
+  const newHere = async () => {
+    const data = await catalog()
+    const directory = ctx.ui.router.current().type === "session" ? current().location.directory : process.cwd()
+    const checkout = data.projects.flatMap(p => p.checkouts).find(c => mode() === "remote" ? c.location === "cloud" && c.directory === directory : c.id === data.currentCheckoutID)
+    if (!checkout) throw new Error("Choose a checkout from Projects first")
+    await newConversation(checkout)
   }
   const send = async () => {
     if (!await connected()) return
@@ -212,8 +276,10 @@ export function setupWorkspaceUI(ctx: Context, bridge: WorkspaceUIBridge) {
     const state = await bridge.state()
     const selected = await ctx.ui.dialog.select({ title: state.mode === "remote" ? "Remote workspace" : "Remote", options: [
       ...(ctx.ui.router.current().type === "session" ? [{ title: state.mode === "local" ? "Continue remotely" : `Continue on ${deviceName}`, value: state.mode === "local" ? "send" : "receive", description: "Move this conversation and its checkout" }] : []),
-      { title: "New remote thread", value: "new", description: "Choose a repository and branch" },
-      { title: "Browse remote workspaces", value: "browse" },
+      { title: "Projects and checkouts", value: "browse", description: "Browse checkouts and their conversations" },
+      ...(state.mode === "local" || ctx.ui.router.current().type === "session" ? [{ title: "New conversation in this checkout", value: "here", description: "Share this checkout's files and environment" }] : []),
+      { title: "New cloud conversation", value: "new", description: "Use an existing checkout or create one" },
+      { title: "New cloud checkout", value: "checkout", description: "A separate working directory and branch" },
       ...(state.mode === "remote" ? [{ title: `Back to ${deviceName}`, value: "local", description: "Leave the remote task running" }, { title: "Open preview", value: "preview" }, { title: "Create pull request", value: "pr" }, { title: "Pause workspace", value: "pause" }] : []),
       { title: "Recover transfer", value: "recover" }, { title: "Connect GitHub", value: "github" },
       { title: state.connected ? "Change remote connection" : "Connect a remote", value: "configure", description: state.remote?.server },
@@ -221,6 +287,8 @@ export function setupWorkspaceUI(ctx: Context, bridge: WorkspaceUIBridge) {
     if (selected === "send") await send()
     else if (selected === "receive") await receive()
     else if (selected === "new") await newThread()
+    else if (selected === "here") await newHere()
+    else if (selected === "checkout") await createCheckout()
     else if (selected === "browse") await browse()
     else if (selected === "recover") await recover()
     else if (selected === "github") await github()
@@ -230,8 +298,10 @@ export function setupWorkspaceUI(ctx: Context, bridge: WorkspaceUIBridge) {
   }
   ctx.keymap.layer(() => ({ mode: "global", commands: [
     { id: "ocx.remote", title: "Remote", palette: true, slash: { name: "remote" }, run: run(hub) },
-    { id: "ocx.workspaces", title: "Remote workspaces", palette: true, slash: { name: "workspaces" }, run: run(browse) },
-    { id: "ocx.new", title: "New remote thread", palette: true, slash: { name: "remote-new" }, run: run(newThread) },
+    { id: "ocx.workspaces", title: "Projects and checkouts", palette: true, slash: { name: "checkouts", aliases: ["workspaces"] }, run: run(browse) },
+    { id: "ocx.new", title: "New cloud conversation", palette: true, slash: { name: "remote-new" }, run: run(newThread) },
+    { id: "ocx.checkout", title: "New cloud checkout", palette: true, slash: { name: "checkout-new" }, run: run(createCheckout) },
+    { id: "ocx.here", title: "New conversation in this checkout", palette: true, slash: { name: "conversation-new" }, enabled: () => mode() === "local" || ctx.ui.router.current().type === "session", run: run(newHere) },
     { id: "ocx.send", title: "Continue remotely", palette: true, slash: { name: "continue-remotely" }, enabled: () => mode() === "local", run: run(send) },
     { id: "ocx.receive", title: `Continue on ${deviceName}`, palette: true, slash: { name: "continue-here", aliases: ["continue-locally"] }, enabled: () => mode() === "remote", run: run(receive) },
     { id: "ocx.recover", title: "Recover transfer", palette: true, slash: { name: "remote-recover" }, run: run(recover) },

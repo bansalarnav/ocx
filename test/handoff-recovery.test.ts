@@ -39,7 +39,7 @@ function fixture(direction: "outbound" | "inbound" = "outbound") {
     throw new Error("not found")
   }
   const manager = {
-    storage, api, get: getWorkspace,
+    storage, api, get: getWorkspace, sessions: async () => [],
     async exclusive<T>(id: string, action: () => Promise<T>): Promise<T> {
       const next = (locks.get(id) ?? Promise.resolve()).catch(() => {}).then(action)
       locks.set(id, next)

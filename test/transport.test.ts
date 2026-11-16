@@ -138,7 +138,10 @@ describe("HTTP and live event transport", () => {
   })
 
   test("fails a slow event consumer at the byte limit", async () => {
+    let overflowObserved!: () => void
+    const overflow = new Promise<void>(resolve => { overflowObserved = resolve })
     const remote = peer(undefined, (ws, frame) => {
+      if (frame.type === "unsubscribe") { overflowObserved(); return }
       if (frame.type !== "subscribe") return
       const data = "x".repeat(maxBufferedBytes / 4)
       for (let i = 0; i < 5; i++) ws.send(JSON.stringify({ type: "event", id: frame.id, data }))
@@ -146,13 +149,11 @@ describe("HTTP and live event transport", () => {
     try {
       await run(remote.origin, transport => Effect.gen(function* () {
         const response = yield* transport.fetch(request("/api/event"))
-        yield* Effect.sleep("40 millis")
+        // Do not consume until the transport has rejected the backlog. Waiting
+        // for its unsubscribe avoids a machine-load-dependent timing guess.
+        yield* Effect.promise(() => overflow).pipe(Effect.timeout("2 seconds"))
         yield* Effect.promise(async () => {
           await expect(response.body!.getReader().read()).rejects.toThrow("overflow")
-        })
-        yield* Effect.promise(async () => {
-          const deadline = Date.now() + 1000
-          while (!remote.frames.some(frame => frame.type === "unsubscribe") && Date.now() < deadline) await Bun.sleep(5)
         })
         expect(remote.frames.some(frame => frame.type === "unsubscribe")).toBe(true)
       }))

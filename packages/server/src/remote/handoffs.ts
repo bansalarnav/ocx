@@ -81,6 +81,10 @@ export class Handoffs {
         // A restart after this point always leaves an addressable operation.
         await this.saveOwnership(workspace, handoff)
       }
+        // Include conversations created through OpenCode's own New Session UI,
+        // which may not have passed through our checkout creation endpoint.
+        await this.manager.sessions(workspaceID)
+        workspace = await this.manager.get(workspaceID)
         // Stop every session using the checkout before capturing it.
         const bundle = await exportSessionFamily(sessionID, this.manager.api)
         for (const id of workspace.sessionIDs) {

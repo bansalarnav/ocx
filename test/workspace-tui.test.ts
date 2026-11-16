@@ -7,8 +7,12 @@ function fixture(mode: "local" | "remote" = "local", connected = true) {
   const prompts: string[] = [], selections: any[] = [], alerts: string[] = []
   const state: WorkspaceUIState = { mode, connected, transfers: [] }
   const workspace = { id: "workspace", name: "My app", root: "/repo", state: "ready", sessionIDs: ["ses_remote"] }
+  const checkout = { id: "workspace", projectID: "repo:github.com/acme/app", projectName: "acme/app", name: "My app", location: "cloud", directory: "/repo", state: "ready", source: "https://github.com/acme/app.git" }
+  const project = { id: checkout.projectID, name: checkout.projectName, source: checkout.source, checkouts: [checkout] }
   const responses: Record<string, any> = {
     workspaces: { workspaces: [workspace] }, sessions: { sessions: [{ id: "ses_remote", title: "Fix login" }] },
+    projects: { projects: [project], deviceID: "this-device" }, checkoutSessions: { sessions: [{ id: "ses_remote", title: "Fix login" }] },
+    createCheckout: { checkout: { ...checkout, id: "new-checkout", name: "Login" } },
     githubStatus: { connected: true }, repositories: [{ full_name: "acme/app", default_branch: "main" }],
     branches: [{ name: "main" }, { name: "release" }],
   }
@@ -17,7 +21,7 @@ function fixture(mode: "local" | "remote" = "local", connected = true) {
     action: async (action, input) => {
       calls.push({ action, input })
       if (action === "configure") state.connected = true
-      return responses[action] ?? (["new", "send", "receive", "switch", "recover"].includes(action) ? { launch: { sessionID: "ses_destination" } } : {})
+      return responses[action] ?? (["new", "createConversation", "openConversation", "send", "receive", "switch", "recover"].includes(action) ? { launch: { sessionID: "ses_destination" } } : {})
     },
   }
   let commands: { id?: string; run: () => Promise<void> }[] = []
@@ -76,22 +80,46 @@ test("Continue locally defaults to a managed checkout and opens the imported con
 test("workspace browsing selects a named thread and switches without an attach command", async () => {
   const f = fixture()
   try {
-    f.selections.push("workspace", "ses_remote")
+    f.selections.push("repo:github.com/acme/app", "workspace", "ses_remote")
     await f.run("ocx.workspaces")
-    expect(f.calls.map(call => call.action)).toEqual(["workspaces", "sessions", "switch", "activate"])
+    expect(f.calls.map(call => call.action)).toEqual(["projects", "checkoutSessions", "openConversation", "activate"])
     expect(f.calls[2].input).toEqual({ workspaceID: "workspace", sessionID: "ses_remote" })
     expect(f.alerts).toEqual([])
   } finally { f.stop() }
 })
 
-test("new remote thread uses repository and branch pickers and opens the thread automatically", async () => {
+test("new cloud checkout is separate from its first conversation and opens the conversation automatically", async () => {
   const f = fixture()
   try {
-    f.selections.push("acme/app", "new", "main")
-    f.prompts.push("agent/login", "Fix login")
+    f.selections.push("repo:github.com/acme/app", "__new", "new", "main")
+    f.prompts.push("agent/login", "Login", "Fix login")
     await f.run("ocx.new")
-    expect(f.calls.find(call => call.action === "new")?.input).toEqual({ source: "acme/app", branch: "main", newBranch: "agent/login", prompt: "Fix login", model: { providerID: "acme", id: "coder" } })
+    expect(f.calls.find(call => call.action === "createCheckout")?.input).toEqual({ source: "https://github.com/acme/app.git", branch: "main", newBranch: "agent/login", name: "Login" })
+    expect(f.calls.find(call => call.action === "createConversation")?.input).toEqual({ workspaceID: "new-checkout", prompt: "Fix login", model: { providerID: "acme", id: "coder" } })
     expect(f.calls.at(-1)?.action).toBe("activate")
+    expect(f.alerts).toEqual([])
+  } finally { f.stop() }
+})
+
+test("another conversation reuses an existing cloud checkout without asking for a repository or branch", async () => {
+  const f = fixture("remote")
+  try {
+    f.selections.push("repo:github.com/acme/app", "workspace")
+    f.prompts.push("Investigate the tests")
+    await f.run("ocx.new")
+    expect(f.calls.map(c => c.action)).toEqual(["projects", "createConversation", "activate"])
+    expect(f.calls[1].input?.workspaceID).toBe("workspace")
+    expect(f.alerts).toEqual([])
+  } finally { f.stop() }
+})
+
+test("a new conversation in the current checkout inherits the remote checkout", async () => {
+  const f = fixture("remote")
+  try {
+    f.prompts.push("")
+    await f.run("ocx.here")
+    expect(f.calls.map(c => c.action)).toEqual(["projects", "createConversation", "activate"])
+    expect(f.calls[1].input?.workspaceID).toBe("workspace")
     expect(f.alerts).toEqual([])
   } finally { f.stop() }
 })

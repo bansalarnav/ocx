@@ -1,6 +1,7 @@
 import { handoffPrefix, workspacePrefix, validID, type CreateWorkspace } from "@ocx/protocol/workspaces"
 import { Handoffs } from "./handoffs"
 import type { WorkspaceManager } from "./manager"
+import { projectPrefix } from "@ocx/protocol/projects"
 
 const json = (value: unknown, status = 200) => Response.json(value, { status, headers: { "cache-control": "no-store" } })
 async function body(request: Request): Promise<any> {
@@ -26,8 +27,14 @@ export function workspaceHandler(manager: WorkspaceManager) {
     const url = new URL(request.url)
     const isWorkspace = url.pathname === workspacePrefix || url.pathname.startsWith(workspacePrefix + "/")
     const isHandoff = url.pathname === handoffPrefix || url.pathname.startsWith(handoffPrefix + "/")
-    if (!isWorkspace && !isHandoff) return
+    const isProject = url.pathname === projectPrefix || url.pathname === projectPrefix + "/checkouts"
+    if (!isWorkspace && !isHandoff && !isProject) return
     try {
+      if (isProject) {
+        if (url.pathname === projectPrefix && request.method === "GET") return json({ projects: await manager.projects() })
+        if (url.pathname.endsWith("/checkouts") && request.method === "POST") return json({ checkout: await manager.registerCheckout(await body(request)) })
+        return json({ error: "Unknown project operation" }, 404)
+      }
       const parts = url.pathname.slice((isWorkspace ? workspacePrefix : handoffPrefix).length).split("/").filter(Boolean)
       const input = request.method === "POST" ? await body(request) : {}
       if (isWorkspace && !parts.length) {
@@ -41,6 +48,7 @@ export function workspaceHandler(manager: WorkspaceManager) {
       if (isWorkspace && parts[0]) {
         const id = validID(parts[0]); const action = parts[1]
         if (!action && request.method === "GET") return json({ workspace: await manager.get(id) })
+        if (action === "sessions" && request.method === "GET") return json({ sessions: await manager.sessions(id) })
         if (request.method === "POST") {
           if (action === "access") return json(await manager.access(id, input.scope === "read" ? "read" : "write"))
           if (action === "provision") return json({ workspace: await manager.provision(id, input.checkpointRef, input.newBranch) })

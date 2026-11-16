@@ -44,6 +44,7 @@ export interface RemoteOptions {
   session?: string
   transfer?: string
   source?: string
+  projectID?: string
   branch?: string
   newBranch?: string
   name?: string
@@ -107,6 +108,7 @@ interface Receipt {
   localServer: string
   directory: string
   workspaceID: string
+  projectID?: string
   sourceSessionID: string
   stage: string
   bundle?: SessionBundle
@@ -185,7 +187,7 @@ export async function runRemoteCommand(options: RemoteOptions, dependencies: Dep
       }
       if (!handoff) {
         const { access } = await remote.request<{ workspace: Workspace; access: RepositoryAccess }>(workspacePrefix, "POST", {
-          id: receipt.workspaceID, name: options.name, source: options.source ?? receipt.checkpoint.manifest.source, branch: receipt.checkpoint.manifest.branch ?? undefined,
+          id: receipt.workspaceID, name: options.name, source: options.source ?? receipt.checkpoint.manifest.source, branch: receipt.checkpoint.manifest.branch ?? undefined, projectID: receipt.projectID,
         })
         await pushCheckpoint(receipt.directory, receipt.checkpoint, access)
         receipt.stage = "uploaded"; await save(receipt)
@@ -301,7 +303,7 @@ export async function runRemoteCommand(options: RemoteOptions, dependencies: Dep
     if (source.metadata?.ocxHandoff) throw new Error("This source thread has already been handed off. Continue its destination or explicitly fork the source first.")
     const receipt: Receipt = {
       version: 1, id: randomUUID(), direction: "local-to-remote", server: remote.origin, localServer: local.origin,
-      directory: resolve(options.directory ?? source.location?.directory ?? process.cwd()), workspaceID: randomUUID(), sourceSessionID: sessionID, stage: "started",
+      directory: resolve(options.directory ?? source.location?.directory ?? process.cwd()), workspaceID: randomUUID(), projectID: options.projectID, sourceSessionID: sessionID, stage: "started",
     }
     await save(receipt)
     log(`Preparing transfer ${receipt.id}. Recover with ocx remote recover --server ${remote.origin} --transfer ${receipt.id}.`)

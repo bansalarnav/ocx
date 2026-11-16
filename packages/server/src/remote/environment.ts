@@ -4,6 +4,7 @@ import { RipgrepBinary } from "@opencode/core/ripgrep/binary"
 import { ShellSelect } from "@opencode/core/shell/select"
 import { State } from "@opencode/core/state"
 import { define } from "@opencode/plugin/effect/plugin"
+import { Tool } from "@opencode/schema/tool"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import type { LayerNode } from "@opencode/util/effect/layer-node"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, PlatformError, Redacted, Sink, Stream } from "effect"
@@ -481,6 +482,8 @@ export const mutatingTools: ReadonlySet<string> = new Set(["write", "edit", "pat
 export interface CheckpointTarget {
   forSession(sessionID: string): Promise<{ readonly id: string } | undefined>
   checkpoint(workspaceID: string): Promise<unknown>
+  claimEditing?(sessionID: string, signal: AbortSignal): Promise<void>
+  releaseEditing?(sessionID: string): Promise<void>
 }
 
 /**
@@ -492,6 +495,13 @@ export const remoteCheckpointPlugin = (target: CheckpointTarget) => define({
   id: "remote-workspace-checkpoint",
   effect: Effect.fn(function* (context) {
     const dirty = new Map<string, string>()
+    yield* context.tool.hook("execute.before", event => {
+      if (!target.claimEditing || (!mutatingTools.has(event.tool) && !/workspace_(write|edit|patch|shell)$/.test(event.tool))) return Effect.void
+      return Effect.tryPromise({
+        try: signal => target.claimEditing!(event.sessionID, signal),
+        catch: error => Tool.Error.make({ message: String(error) }),
+      })
+    })
     yield* context.tool.hook("execute.after", event => {
       if (!mutatingTools.has(event.tool)) return Effect.void
       return Effect.promise(() => target.forSession(event.sessionID)).pipe(
@@ -502,13 +512,14 @@ export const remoteCheckpointPlugin = (target: CheckpointTarget) => define({
     })
     yield* context.session.hook("experimental.idle", event => {
       const workspaceID = dirty.get(event.sessionID)
-      if (!workspaceID) return Effect.void
+      if (!workspaceID) return Effect.promise(() => target.releaseEditing?.(event.sessionID) ?? Promise.resolve())
       dirty.delete(event.sessionID)
       return Effect.tryPromise(() => target.checkpoint(workspaceID)).pipe(
         Effect.catchCause(cause => Effect.sync(() => { if (!dirty.has(event.sessionID)) dirty.set(event.sessionID, workspaceID) }).pipe(
           Effect.andThen(Effect.logWarning("Remote workspace checkpoint failed", cause)),
         )),
         Effect.asVoid,
+        Effect.ensuring(Effect.promise(() => target.releaseEditing?.(event.sessionID) ?? Promise.resolve())),
       )
     })
   }),

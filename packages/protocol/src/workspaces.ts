@@ -7,9 +7,12 @@ export interface Workspace {
   remote: string
   branch?: string
   source?: string
+  projectID?: string
   sandboxID?: string
   checkpointRef?: string
   sessionIDs: string[]
+  /** Cached visible root conversations; sessionIDs also tracks subagents. */
+  conversationCount?: number
   state: "preparing" | "ready" | "paused" | "transferring" | "local" | "failed"
   generation: number
   /** Durable identity of the operation currently holding execution ownership. */
@@ -31,6 +34,7 @@ export interface CreateWorkspace {
   source?: string
   branch?: string
   newBranch?: string
+  projectID?: string
 }
 
 export interface Handoff {

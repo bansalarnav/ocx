@@ -137,8 +137,8 @@ async function fixture() {
     expect(response.status, response.text).toBeLessThan(300)
     return response.value
   }
-  const allocate = async (id: string) => {
-    const result = await ok("/api/ocx/workspaces", "POST", { id, source: "https://source.invalid/repo.git" })
+  const allocate = async (id: string, newBranch?: string) => {
+    const result = await ok("/api/ocx/workspaces", "POST", { id, source: "https://source.invalid/repo.git", newBranch })
     const workspace = result.workspace as Workspace
     // Preserve the actual workflow while placing physical checkout directories
     // under a unique test-owned root rather than writing to /workspaces.
@@ -147,7 +147,7 @@ async function fixture() {
     return workspace
   }
   return {
-    root, source, manager, storage, api, request, ok, allocate,
+    root, source, manager, storage, api, request, ok, allocate, computeStarts: () => created,
     loseNextImportReply() { loseImportReply = true },
     failCommandOnce(predicate: (command: string, stdin?: string) => boolean, when: "before" | "after" = "before") {
       fault = (command, stdin) => predicate(command, stdin) ? when : undefined
@@ -162,6 +162,38 @@ async function fixture() {
     close: async () => { await runtime.dispose(); database.close(); await rm(root, { recursive: true, force: true }) },
   }
 }
+
+test("a project has independent cloud checkouts with multiple conversations and allocates compute only on first conversation", async () => {
+  const f = await fixture()
+  try {
+    const a = await f.allocate("checkout-a", "agent/implementation"), b = await f.allocate("checkout-b")
+    expect(f.computeStarts()).toBe(0)
+    const before = await f.ok("/api/ocx/projects")
+    expect(before.projects).toHaveLength(1)
+    expect(before.projects[0].checkouts.map((c: any) => c.id).sort()).toEqual([a.id, b.id])
+    expect((await f.ok(`/api/ocx/workspaces/${a.id}/sessions`)).sessions).toEqual([])
+    expect(f.computeStarts()).toBe(0)
+    const first = (await f.ok(`/api/ocx/workspaces/${a.id}/sessions`, "POST", { title: "Implementation" })).session
+    const second = (await f.ok(`/api/ocx/workspaces/${a.id}/sessions`, "POST", { title: "Debugging" })).session
+    expect(f.computeStarts()).toBe(1)
+    expect(await git(a.root, "branch", "--show-current")).toBe("agent/implementation")
+    expect(first.id).not.toBe(second.id)
+    expect(first.location.directory).toBe(second.location.directory)
+    await writeFile(join(a.root, "shared.txt"), "Visible in both conversations\n")
+    expect((await f.ok(`/api/ocx/workspaces/${a.id}/sessions`)).sessions.map((s: any) => s.id).sort()).toEqual([first.id, second.id].sort())
+    await f.ok(`/api/ocx/workspaces/${b.id}/sessions`, "POST", { title: "Independent task" })
+    expect(f.computeStarts()).toBe(2)
+    await expect(readFile(join(b.root, "shared.txt"))).rejects.toThrow()
+    const after = await f.ok("/api/ocx/projects")
+    expect(after.projects[0].checkouts.find((c: any) => c.id === a.id).sessionCount).toBe(2)
+    const native = (await f.api("/api/session", "POST", { title: "Created in native OpenCode", location: { directory: a.root } })).data
+    const handoff = (await f.ok("/api/ocx/handoffs", "POST", { id: "checkout-family", workspaceID: a.id, sessionID: first.id })).handoff
+    expect(handoff.session.sessions.map((s: any) => s.info.id).sort()).toEqual([first.id, second.id, native.id].sort())
+    expect((await f.request(`/api/session/${second.id}/prompt`, "POST", { text: "must stay frozen" })).status).toBe(409)
+    expect((await f.request(`/api/ocx/workspaces/${a.id}/sessions`, "POST", {})).status).toBe(409)
+    await f.ok(`/api/ocx/handoffs/${handoff.id}/abort`, "POST", {})
+  } finally { await f.close() }
+}, 30000)
 
 test("remote workspaces create native OpenCode threads and isolate file operations", async () => {
   const f = await fixture()

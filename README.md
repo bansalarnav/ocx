@@ -6,6 +6,8 @@ This is an experimental, single-owner setup. Everyone with the server password s
 
 `bun run ocx` opens local OpenCode with a built-in **Remote** menu. Connect a remote, move conversations in either direction, create remote threads, browse repositories, open PRs, and recover transfers inside OpenCode. Destination conversations open automatically in the same terminal. See [local and remote workspaces](docs/remote-workspaces.md) for the user flow and server setup.
 
+Use `/checkouts` to browse a repository's checkouts across this device and the cloud. A project can have multiple cloud checkouts, each with multiple conversations sharing its working files and sandbox. `/checkout-new` creates an independent cloud checkout; `/conversation-new` starts another conversation in the current checkout. Opening OpenCode in any directory continues to work without a setup wizard.
+
 ## Set up your remote instance
 
 You need [Bun](https://bun.sh/), a Cloudflare account, and the stable OpenCode v2 CLI on your local machine. Install the matching version with `npm install -g @opencode/cli@2.3.0`. `ocx` launches `opencode` by default. Use `--binary /path/to/opencode` to select another installation.
