@@ -4,6 +4,7 @@ import { join, resolve } from "node:path"
 import { ApiError, RemoteAPI } from "./remote-api"
 import { parseRemoteArguments, runRemoteCommand, type RemoteLaunch } from "./remote"
 import { validID, workspacePrefix, type Workspace } from "@ocx/protocol/workspaces"
+import { deviceName } from "./device-name"
 
 interface Connection { server: string; password?: string }
 export interface ControlBridgeOptions {
@@ -189,7 +190,7 @@ export async function createControlBridge(options: ControlBridgeOptions) {
       if (preparing) activeTransfer = preparing[1]
       const visible = preparing ? "Saving your conversation and checkout…"
         : message.startsWith("Thread continued remotely") ? "Your thread is ready remotely."
-        : message.startsWith("Thread restored locally") ? "Your thread is ready locally."
+        : message.startsWith("Thread restored locally") ? `Your thread is ready on ${deviceName}.`
         : message.startsWith("Created remote workspace") ? "Your remote thread is ready."
         : message.startsWith("Aborted transfer") ? "Transfer canceled. Your source thread is available."
         : undefined
@@ -286,7 +287,7 @@ export async function createControlBridge(options: ControlBridgeOptions) {
         const stages: Record<string, string> = {
           started: "Saving your conversation…", captured: "Uploading your checkout…", uploaded: "Preparing the remote workspace…",
           preparing: "Preparing your workspace…", ready: "Preparing the thread handoff…", "source-archived": "Starting the remote continuation…",
-          "awaiting-resume": "Starting the remote continuation…", restoring: "Downloading your checkout…", restored: "Restoring your conversation…", importing: "Restoring your conversation…", "opening-local": "Opening your local conversation…",
+          "awaiting-resume": "Starting the remote continuation…", restoring: "Downloading your checkout…", restored: "Restoring your conversation…", importing: "Restoring your conversation…", "opening-local": `Opening your conversation on ${deviceName}…`,
         }
         return json({
           mode, connected, remote: remote ? { server: remote.server } : undefined, local: { server: local.origin },
@@ -306,8 +307,8 @@ export async function createControlBridge(options: ControlBridgeOptions) {
           if (!readonly) {
             const labels: Record<string, string> = {
               configure: "Connecting to your server…", new: "Preparing your remote thread…", send: "Saving your conversation and checkout…",
-              receive: "Preparing your local checkout…", recover: "Recovering your transfer…", switch: "Opening your remote thread…",
-              switchLocal: "Opening local OpenCode…", pause: "Saving and pausing the workspace…", preview: "Opening the preview…",
+              receive: `Preparing your checkout on ${deviceName}…`, recover: "Recovering your transfer…", switch: "Opening your remote thread…",
+              switchLocal: `Opening OpenCode on ${deviceName}…`, pause: "Saving and pausing the workspace…", preview: "Opening the preview…",
               pr: "Preparing your pull request…", githubLoginStart: "Starting GitHub sign-in…", githubLoginPoll: "Waiting for GitHub sign-in…", activate: "Opening your thread…",
             }
             progress = labels[name] ?? "Preparing your request…"; error = undefined; activeTransfer = undefined

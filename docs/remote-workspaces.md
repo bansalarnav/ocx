@@ -8,7 +8,7 @@ bun run ocx
 
 It opens local OpenCode with your existing server configuration, providers, conversation database, and TUI settings. The launcher reuses a registered local OpenCode service, or starts a backend automatically, and adds the workspace UI. There is no separate server command, plugin installation, local URL, or environment variable to manage.
 
-The footer shows `local` or `remote`. Open **Remote** in the command palette, or type `/remote`, for all remote actions.
+The footer shows your device's hostname or `remote`. Open **Remote** in the command palette, or type `/remote`, for all remote actions.
 
 ## Connect once
 
@@ -39,13 +39,13 @@ OpenCode prepares the checkout and opens the new remote thread automatically. Ev
 
 ## Switch between local and remote work
 
-Choose **Browse remote workspaces**, select a workspace, then select a named thread. It opens in the same terminal. **Back to local OpenCode** returns to local conversations while the remote task keeps running.
+Choose **Browse remote workspaces**, select a workspace, then select a named thread. It opens in the same terminal. **Back to <hostname>** returns to conversations on your device while the remote task keeps running.
 
 The launcher keeps the local backend alive while switching. Upstream's TUI has no public API for replacing its server connection, so the launcher automatically replaces the TUI attachment in the same terminal. Conversations and compute survive that change. The user does not exit and relaunch OpenCode manually. Exiting the launcher leaves a reused local service running and stops a backend it started itself.
 
 ## Continue remotely created work locally
 
-From a remote conversation, choose **Continue locally**. The default destination is an **OpenCode-managed checkout**. Choose **Choose a folder** only if you want a specific new or empty directory.
+From a remote conversation, choose **Continue on <hostname>**, where the label uses your device's actual hostname. The default destination is an **OpenCode-managed checkout**. Choose **Choose a folder** only if you want a specific new or empty directory. The `/continue-here` command opens the same flow; `/continue-locally` remains an alias.
 
 The launcher restores the checkout and conversation, transfers ownership, and opens the local thread automatically. Managed checkouts live under `$XDG_DATA_HOME/opencode/workspaces/<workspace>/<transfer>`, or `~/.local/share/opencode/workspaces/...`.
 

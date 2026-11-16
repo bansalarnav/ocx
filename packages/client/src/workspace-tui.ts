@@ -2,6 +2,7 @@ import { Plugin } from "@opencode/plugin/tui"
 import type { Workspace } from "@ocx/protocol/workspaces"
 import { createSignal } from "solid-js"
 import { jsx } from "@opentui/solid/jsx-runtime"
+import { deviceName } from "./device-name"
 type Context = Parameters<Parameters<typeof Plugin.define>[0]["setup"]>[0]
 
 export interface WorkspaceUIState {
@@ -170,19 +171,19 @@ export function setupWorkspaceUI(ctx: Context, bridge: WorkspaceUIBridge) {
     const session = current()
     const workspace = (await listWorkspaces()).find(w => w.root === session.location.directory)
     if (!workspace) throw new Error("This conversation has no remote checkout")
-    const destination = await ctx.ui.dialog.select({ title: "Continue locally", options: [
+    const destination = await ctx.ui.dialog.select({ title: `Continue on ${deviceName}`, options: [
       { title: "OpenCode-managed checkout", value: "managed", description: "Restore and open automatically on this device" },
       { title: "Choose a folder", value: "custom", description: "Restore into a new or empty folder" },
     ] })
     if (!destination) return
     const directory = destination === "custom" ? await ctx.ui.dialog.prompt({ title: "Destination folder" }) : undefined
     if (destination === "custom" && !directory) return
-    await perform("receive", { workspaceID: workspace.id, sessionID: session.id, directory }, "Bringing this conversation and checkout to your device…")
+    await perform("receive", { workspaceID: workspace.id, sessionID: session.id, directory }, `Bringing this conversation and checkout to ${deviceName}…`)
   }
   const recover = async () => {
     const pending = (await bridge.state()).transfers.filter(t => !["committed", "aborted"].includes(t.stage))
     if (!pending.length) { await ctx.ui.dialog.alert({ title: "Transfers", message: "No unfinished transfers." }); return }
-    const transfer = await ctx.ui.dialog.select({ title: "Recover transfer", options: pending.map(t => ({ title: t.direction === "local-to-remote" ? "Continue remotely" : "Continue locally", value: t, description: t.stage })) })
+    const transfer = await ctx.ui.dialog.select({ title: "Recover transfer", options: pending.map(t => ({ title: t.direction === "local-to-remote" ? "Continue remotely" : `Continue on ${deviceName}`, value: t, description: t.stage })) })
     if (!transfer) return
     const choice = await ctx.ui.dialog.select({ title: "Transfer recovery", options: [
       { title: "Resume transfer", value: "resume", description: "Continue from the last completed step" },
@@ -210,10 +211,10 @@ export function setupWorkspaceUI(ctx: Context, bridge: WorkspaceUIBridge) {
   const hub = async () => {
     const state = await bridge.state()
     const selected = await ctx.ui.dialog.select({ title: state.mode === "remote" ? "Remote workspace" : "Remote", options: [
-      ...(ctx.ui.router.current().type === "session" ? [{ title: state.mode === "local" ? "Continue remotely" : "Continue locally", value: state.mode === "local" ? "send" : "receive", description: "Move this conversation and its checkout" }] : []),
+      ...(ctx.ui.router.current().type === "session" ? [{ title: state.mode === "local" ? "Continue remotely" : `Continue on ${deviceName}`, value: state.mode === "local" ? "send" : "receive", description: "Move this conversation and its checkout" }] : []),
       { title: "New remote thread", value: "new", description: "Choose a repository and branch" },
       { title: "Browse remote workspaces", value: "browse" },
-      ...(state.mode === "remote" ? [{ title: "Back to local OpenCode", value: "local", description: "Leave the remote task running" }, { title: "Open preview", value: "preview" }, { title: "Create pull request", value: "pr" }, { title: "Pause workspace", value: "pause" }] : []),
+      ...(state.mode === "remote" ? [{ title: `Back to ${deviceName}`, value: "local", description: "Leave the remote task running" }, { title: "Open preview", value: "preview" }, { title: "Create pull request", value: "pr" }, { title: "Pause workspace", value: "pause" }] : []),
       { title: "Recover transfer", value: "recover" }, { title: "Connect GitHub", value: "github" },
       { title: state.connected ? "Change remote connection" : "Connect a remote", value: "configure", description: state.remote?.server },
     ] })
@@ -224,7 +225,7 @@ export function setupWorkspaceUI(ctx: Context, bridge: WorkspaceUIBridge) {
     else if (selected === "recover") await recover()
     else if (selected === "github") await github()
     else if (selected === "configure") await configure()
-    else if (selected === "local") await perform("switchLocal", {}, "Opening local OpenCode…")
+    else if (selected === "local") await perform("switchLocal", {}, `Opening OpenCode on ${deviceName}…`)
     else if (selected === "preview" || selected === "pr" || selected === "pause") await workspaceAction(selected)
   }
   ctx.keymap.layer(() => ({ mode: "global", commands: [
@@ -232,10 +233,10 @@ export function setupWorkspaceUI(ctx: Context, bridge: WorkspaceUIBridge) {
     { id: "ocx.workspaces", title: "Remote workspaces", palette: true, slash: { name: "workspaces" }, run: run(browse) },
     { id: "ocx.new", title: "New remote thread", palette: true, slash: { name: "remote-new" }, run: run(newThread) },
     { id: "ocx.send", title: "Continue remotely", palette: true, slash: { name: "continue-remotely" }, enabled: () => mode() === "local", run: run(send) },
-    { id: "ocx.receive", title: "Continue locally", palette: true, slash: { name: "continue-locally" }, enabled: () => mode() === "remote", run: run(receive) },
+    { id: "ocx.receive", title: `Continue on ${deviceName}`, palette: true, slash: { name: "continue-here", aliases: ["continue-locally"] }, enabled: () => mode() === "remote", run: run(receive) },
     { id: "ocx.recover", title: "Recover transfer", palette: true, slash: { name: "remote-recover" }, run: run(recover) },
   ] }))
-  ctx.ui.slot({ append: "prompt.footer.status", render: () => jsx("text", { get children() { return `${mode() === "remote" ? "remote" : "local"}${pending() ? ` · ${pending()} unfinished transfer${pending() === 1 ? "" : "s"}` : ""}` } }) })
+  ctx.ui.slot({ append: "prompt.footer.status", render: () => jsx("text", { get children() { return `${mode() === "remote" ? "remote" : deviceName}${pending() ? ` · ${pending()} unfinished transfer${pending() === 1 ? "" : "s"}` : ""}` } }) })
   return () => { stopped = true; clearInterval(timer) }
 }
 
