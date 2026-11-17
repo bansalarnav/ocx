@@ -9,7 +9,7 @@ export class Proxy extends Context.Service<
   Proxy,
   { readonly origin: string; readonly password: string }
 >()("ocx/Proxy") {
-  static layer = Layer.effect(
+  static withInterceptor = (intercept?: (request: Request) => Promise<Response | undefined>) => Layer.effect(
     Proxy,
     Effect.gen(function* () {
       const transport = yield* Transport
@@ -29,6 +29,10 @@ export class Proxy extends Context.Service<
           if (auth.length !== expected.length || !timingSafeEqual(auth, expected))
             return HttpServerResponse.text("Unauthorized", { status: 401 })
           const request = yield* HttpServerRequest.toWeb(incoming)
+          if (intercept) {
+            const response = yield* Effect.promise(() => intercept(request.clone()))
+            if (response) return HttpServerResponse.fromWeb(response)
+          }
           return HttpServerResponse.fromWeb(yield* transport.fetch(request))
         }).pipe(
           Effect.catch((error) =>
@@ -42,4 +46,5 @@ export class Proxy extends Context.Service<
       return Proxy.of({ origin: `http://127.0.0.1:${server.address.port}`, password })
     }),
   )
+  static layer = Proxy.withInterceptor()
 }

@@ -1,3 +1,4 @@
+import { assertPortableBundle } from "./capabilities"
 import { createWorker } from "@cloudflare/worker-bundler"
 import { Effect } from "effect"
 import { attempt, evaluate } from "@ocx/protocol/errors"
@@ -102,6 +103,7 @@ export const bundlePluginFiles = Effect.fn("bundlePluginFiles")(function* (
       moduleSource(result.mainModule, result.modules),
     )
     yield* evaluate("Check bundle size", () => checkBundleSize(serverEntry, serverBundle!))
+    yield* evaluate("Check server capabilities", () => assertPortableBundle(serverBundle!, "server"))
     warnings.push(...(result.warnings ?? []).map((warning) => `${serverEntry}: ${warning}`))
   }
 
@@ -133,6 +135,7 @@ export const bundlePluginFiles = Effect.fn("bundlePluginFiles")(function* (
       moduleSource(result.mainModule, result.modules),
     )
     yield* evaluate("Check bundle size", () => checkBundleSize("tui.tsx", tuiBundle!))
+    yield* evaluate("Check TUI imports", () => assertPortableBundle(tuiBundle!, "tui"))
     warnings.push(...(result.warnings ?? []).map((warning) => `tui.tsx: ${warning}`))
   }
 

@@ -108,3 +108,50 @@ test("in-app initial approval adds a discoverable stable plugin, then updates an
     })).pipe(Effect.provide(services)))
   } finally { await rm(root, { recursive: true, force: true }) }
 }, 15000)
+
+test("project plugin scope accompanies the manifest, artifact and registry watch, and changes with the checkout", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ocx-plugin-project-"))
+  const projectA = "repo:github.com/acme/app", projectB = "repo:github.com/acme/other"
+  const sourceA = 'export default { id: "project-a", setup() {} }\n'
+  const sourceB = 'export default { id: "project-b", setup() {} }\n'
+  const records = new Map([
+    [projectA, { plugin: entry("project-a", sourceA), source: sourceA }],
+    [projectB, { plugin: entry("project-b", sourceB), source: sourceB }],
+  ])
+  const requests: URL[] = []
+  const options = parseArguments(["--server", "https://plugins.test", "--data-dir", root, "--yes"], {})
+  const transport = Layer.succeed(Transport, { fetch: request => Effect.sync(() => {
+    const url = new URL(request.url)
+    requests.push(url)
+    const record = records.get(url.searchParams.get("projectID") ?? "")
+    if (url.pathname.endsWith("/events")) return new Response(new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode("event: ready\ndata: {}\n\n")) },
+    }))
+    if (url.pathname === "/api/generated-plugins/tui") return Response.json({ schemaVersion: 1, plugins: record ? [record.plugin] : [] })
+    return record && url.pathname.endsWith(`/${record.plugin.id}/${record.plugin.version}`)
+      ? new Response(record.source) : new Response("Wrong scope", { status: 404 })
+  }) })
+  try {
+    for (const projectID of [projectA, projectB, undefined]) {
+      const services = pluginsLayer(options, { XDG_CONFIG_HOME: join(root, "empty") }, { projectID }).pipe(
+        Layer.provide(Files.layer), Layer.provide(transport), Layer.provide(NodeServices.layer),
+      )
+      await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+        const plugins = yield* Plugins
+        const client = yield* plugins.prepare
+        yield* plugins.watch(client).pipe(Effect.forkScoped)
+        yield* Effect.sleep("30 millis")
+        const installed = yield* Effect.promise(() => readdir(join(client.configDir, "plugins")))
+        if (projectID) expect(installed).toContain(records.get(projectID)!.plugin.id)
+        for (const [id, record] of records) if (id !== projectID) expect(installed).not.toContain(record.plugin.id)
+      })).pipe(Effect.provide(services)))
+    }
+    for (const projectID of [projectA, projectB]) {
+      const scoped = requests.filter(url => url.searchParams.get("projectID") === projectID)
+      expect(scoped.some(url => url.pathname === "/api/generated-plugins/tui")).toBe(true)
+      expect(scoped.some(url => url.pathname.endsWith("/events"))).toBe(true)
+      expect(scoped.some(url => url.pathname.endsWith(`/${records.get(projectID)!.plugin.id}/${records.get(projectID)!.plugin.version}`))).toBe(true)
+    }
+    expect(requests.every(url => !url.searchParams.has("projectID") || records.has(url.searchParams.get("projectID")!))).toBe(true)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})

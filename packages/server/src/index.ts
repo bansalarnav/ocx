@@ -1,3 +1,4 @@
+import { makeCloudPluginsHandler } from "./plugin-manager/http"
 import { SharedDevices } from "./shared-devices"
 import { DurableObject } from "cloudflare:workers"
 import { isOpenCodeEvent } from "@opencode/protocol/groups/event"
@@ -19,6 +20,7 @@ export interface Env extends HostEnv, WorkspaceEnv {
 export class OpenCodeDO extends DurableObject<Env> {
   private readonly transport: SocketTransport
   private readonly runtime: ManagedRuntime.ManagedRuntime<Host, never>
+  private readonly cloudPlugins: ReturnType<typeof makeCloudPluginsHandler>
   private readonly registry: ReturnType<typeof makeTuiRegistryHandler>
   private readonly instanceConfig: ReturnType<typeof makeInstanceConfigHandler>
   private readonly workspaces: WorkspaceManager
@@ -49,6 +51,7 @@ export class OpenCodeDO extends DurableObject<Env> {
     })
     this.workspaceRoutes = workspaceHandler(this.workspaces)
     this.githubRoutes = githubHandler(state.storage, env)
+    this.cloudPlugins = makeCloudPluginsHandler(store, env.OPENCODE_PASSWORD, Effect.promise(() => this.runtime.runPromise(Host.pipe(Effect.flatMap(host => host.invalidate)))))
     this.runtime = ManagedRuntime.make(
       hostLayer(state.storage, env, instanceConfig, (event) =>
         Effect.sync(() => {
@@ -81,6 +84,8 @@ export class OpenCodeDO extends DurableObject<Env> {
     if (rejected) return rejected
     return this.runtime.runPromise(
       Effect.gen({ self: this }, function* () {
+        const plugins = yield* this.cloudPlugins(request)
+        if (plugins) return plugins
         const configured = yield* this.instanceConfig(request)
         if (configured) {
           if (configured.changed) yield* (yield* Host).invalidate

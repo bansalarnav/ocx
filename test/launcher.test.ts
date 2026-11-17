@@ -2,7 +2,9 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import { runLauncher, type TuiLaunch } from "../packages/client/src/launcher"
+import { remotePluginProject, runLauncher, type TuiLaunch } from "../packages/client/src/launcher"
+import { Effect, Layer } from "effect"
+import { Transport } from "../packages/client/src/transport"
 import { discoverLocalServer, startLocalServer } from "../packages/client/src/local-server"
 import { createLocalTuiConfig } from "../packages/client/src/local-config"
 import { parseArguments } from "../packages/client/src/options"
@@ -17,6 +19,26 @@ function deferred<T>() {
   const promise = new Promise<T>(done => resolve = done)
   return { promise, resolve }
 }
+
+test("cloud plugin scope follows the actual remote session rather than the local launch directory", async () => {
+  const requests: string[] = []
+  const transport = Layer.succeed(Transport, { fetch: request => Effect.sync(() => {
+    const path = new URL(request.url).pathname
+    requests.push(path)
+    return Response.json(path === "/api/session/ses_remote"
+      ? { data: { id: "ses_remote", location: { directory: "/remote/checkout" } } }
+      : { workspaces: [
+        { id: "wrong", root: "/device/current-directory", source: "https://github.com/acme/wrong.git", sessionIDs: [] },
+        { id: "right", root: "/remote/checkout", source: "git@github.com:acme/app.git", sessionIDs: ["ses_remote"] },
+      ] })
+  }) })
+  const project = await Effect.runPromise(remotePluginProject({ server: "https://cloud.test", directory: "/device/current-directory" }, ["--session", "ses_remote"]).pipe(Effect.provide(transport)))
+  expect(project).toBe("repo:github.com/acme/app")
+  expect(requests).toEqual(["/api/session/ses_remote", "/api/ocx/workspaces"])
+  requests.length = 0
+  expect(await Effect.runPromise(remotePluginProject({ server: "https://cloud.test" }).pipe(Effect.provide(transport)))).toBeUndefined()
+  expect(requests).toEqual([])
+})
 
 describe("owned local OpenCode and TUI switches", () => {
   test("local startup injects the builtin plugin, switches both ways, and keeps one backend until final exit", async () => {

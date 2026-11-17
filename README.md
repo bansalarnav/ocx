@@ -4,9 +4,11 @@ Run the OpenCode v2 server on your own Cloudflare account and connect from your 
 
 This is an experimental, single-owner setup. Everyone with the server password shares access to its sessions, credentials, and configured devices. It uses stable OpenCode packages pinned to `2.3.0`.
 
-`bun run ocx` opens local OpenCode with a built-in **Remote** menu. Connect a remote, move conversations in either direction, create remote threads, browse repositories, open PRs, and recover transfers inside OpenCode. Destination conversations open automatically in the same terminal. See [local and remote workspaces](docs/remote-workspaces.md) for the user flow and server setup.
+`bun run ocx` opens OpenCode on your device. Click the hostname or checkout under the prompt, or use **Alt+M** and **Alt+W**, to choose where the next conversation runs. Type in the normal input and press Enter. Move existing conversations between your device and Cloud from the same machine picker. Draft text and attachments survive attachment changes. See [local and remote workspaces](docs/remote-workspaces.md) for the user flow and server setup.
 
 Use `/checkouts` to browse a repository's checkouts across this device and the cloud. A project can have multiple cloud checkouts, each with multiple conversations sharing its working files and sandbox. `/checkout-new` creates an independent cloud checkout; `/conversation-new` starts another conversation in the current checkout. Opening OpenCode in any directory continues to work without a setup wizard.
+
+Use **Cloud plugins** in the command palette or `/cloud-plugins` to install npm plugins on Cloud for all projects or one project. Installations survive sandbox pauses and replacement. Supported runtime capabilities are described in [plugin loading and approvals](docs/tui-plugins.md).
 
 ## Set up your remote instance
 

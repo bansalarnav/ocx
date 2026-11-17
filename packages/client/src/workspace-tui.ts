@@ -1,9 +1,13 @@
 import { Plugin } from "@opencode/plugin/tui"
 import type { Workspace } from "@ocx/protocol/workspaces"
-import { createSignal } from "solid-js"
+import { createEffect, createSignal, onCleanup } from "solid-js"
 import { jsx } from "@opentui/solid/jsx-runtime"
 import { deviceName } from "./device-name"
 import { repositoryIdentity, type Project, type ProjectCheckout } from "@ocx/protocol/projects"
+import { captureComposer, findComposerEditor, restoreComposer } from "./composer-native"
+import type { Renderable } from "@opentui/core"
+import type { ComposerTarget } from "./composer-router"
+import type { CloudPluginInfo } from "@ocx/protocol/cloud-plugins"
 type Context = Parameters<Parameters<typeof Plugin.define>[0]["setup"]>[0]
 
 export interface WorkspaceUIState {
@@ -12,6 +16,9 @@ export interface WorkspaceUIState {
   remote?: { server: string }
   progress?: string
   transfers: { id: string; stage: string; direction: string }[]
+  composerTarget?: ComposerTarget
+  autoActivate?: boolean
+  pending?: { sessionID: string }
 }
 export interface WorkspaceUIBridge {
   state(): Promise<WorkspaceUIState>
@@ -34,24 +41,64 @@ export function workspaceBridge(origin: string, token: string, request: typeof f
 /** The launcher owns credentials, local server discovery, transfers and switching.
  * Dialogs never ask users to find a session ID, port, or transfer command. */
 export function setupWorkspaceUI(ctx: Context, bridge: WorkspaceUIBridge) {
-  let busy = false, stopped = false, refreshing = false
+  let busy = false, stopped = false, refreshing = false, switchingAttachment = false
+  const lifetime = new AbortController()
   const [mode, setMode] = createSignal<"local" | "remote">(process.env.OCX_MODE === "remote" ? "remote" : "local")
   const [progress, setProgress] = createSignal("Preparing…")
   const [pending, setPending] = createSignal(0)
+  const [selectedTarget, setSelectedTarget] = createSignal<ComposerTarget>()
+  const [checkoutContext, setCheckoutContext] = createSignal<ProjectCheckout>()
+  let footerAnchor: Renderable | undefined
+  let contextKey = "", loadingContext = false, activationAttempted: string | undefined
+  const nativeComposer = {
+    editor: () => findComposerEditor(footerAnchor) ?? findComposerEditor(ctx.renderer?.root),
+    commands: () => ctx.keymap.commands(),
+    ready: () => {
+      const sessionID = process.env.OCX_DRAFT_SESSION_ID, route = ctx.ui.router.current()
+      return !sessionID || route.type === "session" && route.sessionID === sessionID
+    },
+  }
+  let frozenComposer: ReturnType<typeof nativeComposer.editor>
+  const thawComposer = () => {
+    if (frozenComposer && !frozenComposer.isDestroyed) { frozenComposer.focusable = true; frozenComposer.focus() }
+    frozenComposer = undefined
+  }
+  const saveDraft = async () => {
+    if (!ctx.renderer) return undefined
+    const draft = await captureComposer(nativeComposer)
+    frozenComposer = nativeComposer.editor()
+    if (frozenComposer) { frozenComposer.blur(); frozenComposer.focusable = false }
+    draft.directory = checkoutContext()?.directory ?? currentDirectory()
+    return (await bridge.action<{ id: string }>("captureDraft", { draft })).id
+  }
   const refresh = async () => {
     if (refreshing || stopped) return
     refreshing = true
     try {
       const state = await bridge.state()
       setMode(state.mode)
+      setSelectedTarget(state.composerTarget)
       if (state.progress) setProgress(state.progress)
       setPending(state.transfers.filter(t => !["committed", "aborted"].includes(t.stage)).length)
+      if (state.autoActivate && state.pending && !busy && activationAttempted !== state.pending.sessionID) {
+        activationAttempted = state.pending.sessionID
+        void run(async () => {
+          const draftID = await saveDraft()
+          await bridge.action("activate", { draftID })
+          switchingAttachment = true
+        })()
+      }
+      const route = ctx.ui.router.current()
+      const key = `${state.mode}:${route.type === "session" ? route.sessionID : "home"}`
+      if (ctx.renderer && !loadingContext && contextKey !== key && !busy) {
+        contextKey = key; loadingContext = true
+        void loadContext().catch(() => {}).finally(() => { loadingContext = false })
+      }
     } catch {} finally { refreshing = false }
   }
-  void refresh()
   const timer = setInterval(() => { void refresh() }, 1000)
   const run = (action: () => Promise<void>) => async () => {
-    if (busy) return
+    if (busy || switchingAttachment) return
     busy = true
     try { await action() }
     catch (error) {
@@ -59,7 +106,7 @@ export function setupWorkspaceUI(ctx: Context, bridge: WorkspaceUIBridge) {
       try { recovery = (await bridge.state()).transfers.some(t => !["committed", "aborted"].includes(t.stage)) } catch {}
       await ctx.ui.dialog.alert({ title: "Remote", message: (error instanceof Error ? error.message : String(error)) + (recovery ? "\n\nRecover this transfer from Remote → Recover transfer." : "") })
     }
-    finally { busy = false; void refresh() }
+    finally { if (!switchingAttachment) thawComposer(); busy = false; void refresh() }
   }
   const current = () => {
     const route = ctx.ui.router.current()
@@ -73,13 +120,16 @@ export function setupWorkspaceUI(ctx: Context, bridge: WorkspaceUIBridge) {
     children: [jsx("text", { children: "Your workspace" }), jsx("text", { get children() { return progress() } })],
   }))
   const perform = async (action: string, input: Record<string, unknown> = {}, label = "Preparing workspace…") => {
+    const switching = ["send", "receive", "recover", "switch", "switchLocal", "openConversation", "createConversation", "configure"].includes(action)
+    const draftID = switching ? await saveDraft() : undefined
     setProgress(label); showProgress()
     try {
       const result = await bridge.action<any>(action, input)
       ctx.ui.dialog.clear()
       if (result?.launch) {
         setProgress("Opening the conversation…"); showProgress()
-        await bridge.action("activate")
+        await bridge.action("activate", { draftID })
+        switchingAttachment = true
       } else if (result?.url) await ctx.ui.dialog.alert({ title: action === "pr" ? "Pull request" : "Preview", message: result.url })
       else ctx.ui.toast.show({ variant: "success", message: action === "pause" ? "Workspace paused" : "Done" })
       return result
@@ -106,15 +156,98 @@ export function setupWorkspaceUI(ctx: Context, bridge: WorkspaceUIBridge) {
   const catalog = () => {
     const route = ctx.ui.router.current()
     const session = route.type === "session" ? ctx.data.session.get(route.sessionID) : undefined
-    return bridge.action<{ projects: Project[]; deviceID: string; currentCheckoutID?: string; offline?: boolean }>("projects", { directory: session?.location.directory ?? process.cwd() })
+    return bridge.action<{ projects: Project[]; deviceID: string; currentCheckoutID?: string; offline?: boolean }>("projects", { directory: session?.location.directory ?? ctx.location?.directory ?? process.cwd() })
   }
   const target = (checkout: ProjectCheckout) => checkout.location === "cloud" ? { workspaceID: checkout.id } : { checkoutID: checkout.id }
+  const currentDirectory = () => {
+    const route = ctx.ui.router.current()
+    return (route.type === "session" ? ctx.data.session.get(route.sessionID)?.location.directory : undefined) ?? ctx.location?.directory ?? process.cwd()
+  }
+  const loadContext = async () => {
+    const data = await catalog()
+    const directory = currentDirectory()
+    const checkout = data.projects.flatMap(p => p.checkouts).find(c => mode() === "remote" ? c.location === "cloud" && c.directory === directory : c.id === data.currentCheckoutID)
+    setCheckoutContext(checkout)
+    const route = ctx.ui.router.current()
+    // A new attachment reloads project-scoped TUI plugins before showing the
+    // next project. The server independently enforces tool scope.
+    if (!busy && mode() === "remote" && route.type === "session" && checkout?.location === "cloud" && checkout.projectID !== process.env.OCX_PROJECT_ID) {
+      void run(async () => { await perform("openConversation", { workspaceID: checkout.id, sessionID: route.sessionID }, "Opening this project's plugins…") })()
+    }
+    return { ...data, current: checkout, project: data.projects.find(p => p.id === checkout?.projectID) }
+  }
+  const selectTarget = async (value: Partial<ComposerTarget>) => {
+    const { target } = await bridge.action<{ target: ComposerTarget }>("selectComposerTarget", { target: value, directory: checkoutContext()?.directory ?? currentDirectory() })
+    setSelectedTarget(target)
+  }
+  const pickCheckout = async (location = selectedTarget()?.location ?? (mode() === "remote" ? "cloud" : "device")) => {
+    const data = await loadContext()
+    const project = data.projects.find(p => p.id === selectedTarget()?.projectID) ?? data.project
+    if (!project) throw new Error("Open a project directory before selecting a checkout")
+    const checkouts = project.checkouts.filter(c => c.location === location)
+    const chosen = await ctx.ui.dialog.select<ProjectCheckout | "__new">({ title: `${project.name} · ${location === "cloud" ? "Cloud" : deviceName}`, options: [
+      ...checkouts.map(c => ({ title: c.branch ?? c.name, value: c, description: c.name, disabled: c.location === "device" ? c.deviceID !== data.deviceID : ["transferring", "local"].includes(c.state) })),
+      ...(location === "cloud" && project.source ? [{ title: "New checkout", value: "__new" as const, description: `Start from ${data.current?.branch ?? "the default branch"}` }] : []),
+    ] })
+    if (chosen === "__new") await selectTarget({ location: "cloud", projectID: project.id, newCheckout: { id: "", source: project.source!, branch: data.current?.branch } })
+    else if (chosen) {
+      if (chosen.id === data.current?.id) {
+        await bridge.action("selectComposerTarget", { target: null }); setSelectedTarget(undefined)
+      } else await selectTarget({ location, ...target(chosen) })
+    }
+  }
+  const pickMachine = async () => {
+    const route = ctx.ui.router.current()
+    const existing = route.type === "session" && (ctx.data.session.message?.list(route.sessionID)?.length ?? 0) > 0
+    const chosen = await ctx.ui.dialog.select({ title: existing ? "Continue this conversation on…" : "Run on…", options: [
+      { title: deviceName, value: "device", description: "This device" },
+      { title: "Cloud", value: "cloud", description: existing ? "Move this conversation and checkout" : "Compute starts when you send" },
+    ] })
+    if (!chosen) return
+    if (existing) {
+      if (chosen === "cloud" && mode() === "local") await send()
+      else if (chosen === "device" && mode() === "remote") await receive()
+      return
+    }
+    if (chosen === "cloud" && !await connected()) return
+    await pickCheckout(chosen as "device" | "cloud")
+  }
+  const cloudPlugins = async () => {
+    if (!await connected()) return
+    const data = await loadContext()
+    const projectID = selectedTarget()?.projectID ?? data.current?.projectID
+    const projectName = data.projects.find(p => p.id === projectID)?.name ?? "this project"
+    for (;;) {
+      const { plugins } = await bridge.action<{ plugins: CloudPluginInfo[] }>("cloudPlugins")
+      const selected = await ctx.ui.dialog.select<CloudPluginInfo | "__install">({ title: "Cloud plugins", options: [
+        { title: "Install a plugin", value: "__install", description: "Install an npm package on Cloud" },
+        ...plugins.map(p => ({ title: `${p.package}@${p.version}`, value: p,
+          description: `${p.enabled ? "Enabled" : "Disabled"} · ${p.scope === "cloud" ? "All cloud projects" : data.projects.find(project => project.id === p.projectID)?.name ?? p.projectID}` })),
+      ] })
+      if (!selected) return
+      if (selected === "__install") {
+        const pkg = await ctx.ui.dialog.prompt({ title: "Install a cloud plugin", placeholder: "@scope/plugin or plugin@version", description: "Runs on your Cloudflare server. Packages must support OpenCode's cloud plugin runtime." })
+        if (!pkg?.trim()) continue
+        const scope = await ctx.ui.dialog.select({ title: "Install for…", options: [
+          { title: "All cloud projects", value: "cloud" },
+          ...(projectID ? [{ title: projectName, value: "project", description: "Only this project" }] : []),
+        ] })
+        if (!scope) continue
+        const result = await perform("installCloudPlugin", { package: pkg.trim(), scope, projectID }, "Installing the plugin on Cloud…")
+        if (result?.plugin?.warnings?.length) await ctx.ui.dialog.alert({ title: "Plugin installed", message: result.plugin.warnings.join("\n") })
+      } else {
+        const operation = await ctx.ui.dialog.select({ title: `${selected.package}@${selected.version}`, options: [
+          { title: selected.enabled ? "Disable" : "Enable", value: selected.enabled ? "disable" : "enable" },
+          { title: "Uninstall", value: "remove" },
+        ] })
+        if (operation) await perform("manageCloudPlugin", { id: selected.id, operation }, "Updating the cloud plugin…")
+      }
+    }
+  }
   const newConversation = async (checkout: ProjectCheckout) => {
     if (checkout.location === "cloud" && !await connected()) return
-    const prompt = await ctx.ui.dialog.prompt({ title: "New conversation", description: `Files are shared with other conversations in ${checkout.name}. Use a new checkout for independent changes.`, placeholder: "Describe the task, or leave empty to start a conversation" })
-    if (prompt === undefined) return
-    const model = ctx.ui.model.current()
-    await perform("createConversation", { ...target(checkout), prompt, model: model ? { providerID: model.providerID, id: model.modelID } : undefined }, `Opening a conversation in ${checkout.name}…`)
+    await selectTarget({ location: checkout.location, ...target(checkout) })
+    ctx.ui.toast.show({ variant: "success", message: `Next message starts a conversation in ${checkout.branch ?? checkout.name}` })
   }
   const openCheckout = async (checkout: ProjectCheckout) => {
     const { sessions } = await bridge.action<{ sessions: { id: string; title?: string }[] }>("checkoutSessions", target(checkout))
@@ -282,6 +415,7 @@ export function setupWorkspaceUI(ctx: Context, bridge: WorkspaceUIBridge) {
       { title: "New cloud checkout", value: "checkout", description: "A separate working directory and branch" },
       ...(state.mode === "remote" ? [{ title: `Back to ${deviceName}`, value: "local", description: "Leave the remote task running" }, { title: "Open preview", value: "preview" }, { title: "Create pull request", value: "pr" }, { title: "Pause workspace", value: "pause" }] : []),
       { title: "Recover transfer", value: "recover" }, { title: "Connect GitHub", value: "github" },
+      { title: "Cloud plugins", value: "plugins", description: "Install and manage packages on Cloud" },
       { title: state.connected ? "Change remote connection" : "Connect a remote", value: "configure", description: state.remote?.server },
     ] })
     if (selected === "send") await send()
@@ -293,10 +427,14 @@ export function setupWorkspaceUI(ctx: Context, bridge: WorkspaceUIBridge) {
     else if (selected === "recover") await recover()
     else if (selected === "github") await github()
     else if (selected === "configure") await configure()
+    else if (selected === "plugins") await cloudPlugins()
     else if (selected === "local") await perform("switchLocal", {}, `Opening OpenCode on ${deviceName}…`)
     else if (selected === "preview" || selected === "pr" || selected === "pause") await workspaceAction(selected)
   }
   ctx.keymap.layer(() => ({ mode: "global", commands: [
+    { id: "ocx.machine", title: "Choose machine", bind: "alt+m", palette: true, run: run(pickMachine) },
+    { id: "ocx.composer-checkout", title: "Choose checkout", bind: "alt+w", palette: true, run: run(() => pickCheckout()) },
+    { id: "ocx.plugins", title: "Cloud plugins", palette: true, slash: { name: "cloud-plugins" }, run: run(cloudPlugins) },
     { id: "ocx.remote", title: "Remote", palette: true, slash: { name: "remote" }, run: run(hub) },
     { id: "ocx.workspaces", title: "Projects and checkouts", palette: true, slash: { name: "checkouts", aliases: ["workspaces"] }, run: run(browse) },
     { id: "ocx.new", title: "New cloud conversation", palette: true, slash: { name: "remote-new" }, run: run(newThread) },
@@ -306,8 +444,54 @@ export function setupWorkspaceUI(ctx: Context, bridge: WorkspaceUIBridge) {
     { id: "ocx.receive", title: `Continue on ${deviceName}`, palette: true, slash: { name: "continue-here", aliases: ["continue-locally"] }, enabled: () => mode() === "remote", run: run(receive) },
     { id: "ocx.recover", title: "Recover transfer", palette: true, slash: { name: "remote-recover" }, run: run(recover) },
   ] }))
-  ctx.ui.slot({ append: "prompt.footer.status", render: () => jsx("text", { get children() { return `${mode() === "remote" ? "remote" : deviceName}${pending() ? ` · ${pending()} unfinished transfer${pending() === 1 ? "" : "s"}` : ""}` } }) })
-  return () => { stopped = true; clearInterval(timer) }
+  const draftID = process.env.OCX_DRAFT_ID
+  let restorationStarted = false
+  const restoreDraft = () => {
+    if (restorationStarted || !draftID || !ctx.renderer) return
+    restorationStarted = true; busy = true
+    void restoreComposer(nativeComposer, draftID, Number(process.env.OCX_DRAFT_CURSOR ?? 0), lifetime.signal)
+      .then(async () => {
+        delete process.env.OCX_DRAFT_ID
+        await bridge.action("draftRestored", { id: draftID })
+      })
+      .catch(error => { if (!stopped) return ctx.ui.dialog.alert({ title: "Saved draft", message: error instanceof Error ? error.message : String(error) }) })
+      .finally(() => { busy = false; void refresh() })
+  }
+  const controls = () => jsx("box", {
+    id: "ocx.composer-target", ref: (node: Renderable) => { footerAnchor = node; queueMicrotask(restoreDraft) },
+    flexDirection: "row", flexGrow: 1, flexShrink: 1, minWidth: 0, height: 1, gap: 1,
+    children: [
+      jsx("text", {
+        id: "ocx.composer-machine", fg: ctx.theme?.text?.base,
+        flexShrink: 0, height: 1, wrapMode: "none",
+        onMouseUp: run(pickMachine),
+        get children() { return `${selectedTarget()?.machine ?? (mode() === "remote" ? "Cloud" : deviceName)} ▾` },
+      }),
+      jsx("text", {
+        id: "ocx.composer-checkout", fg: ctx.theme?.text?.muted,
+        flexGrow: 1, flexShrink: 1, minWidth: 0, height: 1, wrapMode: "none", truncate: true,
+        onMouseUp: run(() => pickCheckout()),
+        get children() {
+          const checkout = checkoutContext()
+          const branch = checkout?.branch ?? checkout?.name ?? currentDirectory().split("/").filter(Boolean).at(-1) ?? "/"
+          return `${selectedTarget()?.checkout ?? branch}${selectedTarget() ? " (new)" : ""} ▾`
+        },
+      }),
+      jsx("text", { fg: ctx.theme?.text?.muted, get children() {
+        return pending() ? `${pending()} unfinished transfer${pending() === 1 ? "" : "s"}` : ""
+      } }),
+    ],
+  })
+  ctx.ui.slot({ prepend: "prompt.footer.status", render: controls })
+  createEffect(() => {
+    const route = ctx.ui.router.current()
+    if (route.type === "session" && ctx.data.session.status?.(route.sessionID) === "running") return
+    // Keep the native interrupt indicator while running. When idle, the
+    // checkout control takes the location label's space, including on narrow terminals.
+    onCleanup(ctx.ui.slot({ replace: "prompt.footer.status", render: controls }))
+  })
+  void refresh()
+  return () => { stopped = true; lifetime.abort(); thawComposer(); clearInterval(timer) }
 }
 
 export default Plugin.define({

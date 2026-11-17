@@ -9,6 +9,7 @@ import { ServerWorkerd } from "@opencode/server/workerd"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { Context, Effect, Exit, Layer, RcRef, Scope } from "effect"
 import { attempt, evaluate, type OperationError } from "@ocx/protocol/errors"
+import { cloudCheckout } from "@ocx/protocol/projects"
 import { deviceMcpServers, type DeviceMcpEnv } from "./device-mcps"
 import { makePluginManager } from "./plugin-manager/manager"
 import { PluginStore } from "./plugin-manager/store"
@@ -73,7 +74,10 @@ export const hostLayer = (
               plugin.files["server.ts"] !== undefined ||
               plugin.files["server.js"] !== undefined)
           ) {
-            yield* registry.upsert(makeQuickJSPlugin(plugin))
+            yield* registry.upsert(makeQuickJSPlugin(plugin, undefined, workspaces ? async id => {
+              const workspace = await workspaces.forSession(id)
+              return workspace ? cloudCheckout(workspace).projectID : undefined
+            } : undefined))
           }
         }
         const mcp = yield* evaluate("Read device configuration", () => deviceMcpServers(env))

@@ -8,7 +8,11 @@ bun run ocx
 
 It opens local OpenCode with your existing server configuration, providers, conversation database, and TUI settings. The launcher reuses a registered local OpenCode service, or starts a backend automatically, and adds the workspace UI. There is no separate server command, plugin installation, local URL, or environment variable to manage.
 
-The footer shows your device's hostname or `remote`. Open **Remote** in the command palette, or type `/remote`, for all remote actions.
+The prompt footer has clickable machine and checkout controls. The machine shows your actual hostname or **Cloud**. **Alt+M** opens the machine picker and **Alt+W** opens the checkout picker. These commands also appear in the command palette and their bindings can be changed in OpenCode's keybind configuration.
+
+Choose a machine and checkout, type in OpenCode's normal composer, and press Enter. Selecting a target does not start a sandbox or create a conversation. The next submission carries the native prompt, selected agent/model, images, file attachments, mentions and skills to that checkout, then opens its conversation automatically. Selecting another checkout while viewing a conversation starts a new conversation there; `(new)` in the footer marks the pending target. Choosing the current checkout again cancels that change. Escape closes either picker without changing the draft.
+
+Open **Remote** in the command palette, or type `/remote`, for connection settings, GitHub, previews, pull requests and transfer recovery.
 
 ## Projects, checkouts, and conversations
 
@@ -28,7 +32,7 @@ The remote installation needs to have been deployed by its administrator. Infras
 
 ## Continue the current conversation remotely
 
-Choose **Continue remotely** in the command palette or Remote menu. The current thread and repository come from OpenCode itself.
+Click the machine control and choose **Cloud**, or choose **Continue remotely** in the command palette or Remote menu. For an existing conversation, the machine picker moves that conversation and its checkout. The current thread and repository come from OpenCode itself.
 
 A progress dialog covers settling the conversation, saving the checkout, preparing the sandbox, and importing the thread. On completion, the destination conversation opens automatically in the same terminal. There is no attach command to copy and no session ID to look up.
 
@@ -36,7 +40,9 @@ The source conversation is archived and its checkout stays in place. Cloudflare 
 
 ## Create a remote conversation
 
-Choose **New cloud conversation** from the Remote menu or command palette, or `/remote-new`.
+On a new conversation, choose **Cloud** in the machine picker, then choose a checkout. **New checkout** starts a separate branch from the current branch when you send. Write the task in the normal composer and press Enter.
+
+**New cloud conversation** in the Remote menu or command palette, or `/remote-new`, also lets you choose another project.
 
 Select a project and an existing cloud checkout to start another conversation there. To create an independent checkout, select **New cloud checkout**. You can also start that flow directly with `/checkout-new`:
 
@@ -44,9 +50,9 @@ Select a project and an existing cloud checkout to start another conversation th
 2. Choose a new branch or an existing branch.
 3. Pick the base branch and enter a name for a new branch if needed.
 4. Give the checkout a name.
-5. Choose **New conversation in this checkout**, then describe the task or leave it empty to start a conversation.
+5. Choose **New conversation in this checkout**, then write the task in the normal composer and press Enter.
 
-OpenCode prepares the checkout when its first conversation is created and opens the thread automatically. Every cloud checkout has its own sandbox. The current version uses independent clones, not linked Git worktrees.
+OpenCode prepares the checkout on its first submission and opens the thread automatically. Every cloud checkout has its own sandbox. The current version uses independent clones, not linked Git worktrees.
 
 **Connect GitHub** in the same menu displays an authorization URL and code. Authorize in the browser; OpenCode notices completion and you can browse private repositories. No terminal login command is needed.
 
@@ -55,6 +61,14 @@ OpenCode prepares the checkout when its first conversation is created and opens 
 Choose **Projects and checkouts**, select a project, a checkout, then a named conversation. It opens in the same terminal. **Back to <hostname>** returns to conversations on your device while the remote task keeps running.
 
 The launcher keeps the local backend alive while switching. Upstream's TUI has no public API for replacing its server connection, so the launcher automatically replaces the TUI attachment in the same terminal. Conversations and compute survive that change. The user does not exit and relaunch OpenCode manually. Exiting the launcher leaves a reused local service running and stops a backend it started itself.
+
+Unsent drafts survive attachment changes, including images, expanded paste content, mentions and cursor position. Repository file references follow the destination checkout's root. The launcher saves the native composer snapshot in a private receipt and restores it through OpenCode's native prompt stash after the destination composer mounts. The receipt is removed after restoration. A failed restore retains the saved draft; text typed into the destination is never overwritten. Device environment variables are not forwarded to a selected cloud checkout.
+
+## Install cloud plugins
+
+Open **Cloud plugins** in the command palette or use `/cloud-plugins`. Enter an npm package and choose **All cloud projects** or the current project. The manager lists pinned versions and lets you enable, disable or uninstall packages.
+
+Packages and bundles live on Cloudflare independently of compute. Server tools obey project scope; project TUI plugins load only for the attached project. TUI code still needs the client's normal code approval. The current server runtime supports a subset of stable Promise plugins, including JSON Schema tools and durable storage. Packages requiring Node, filesystem or unsupported host APIs fail installation. See [cloud plugin capabilities](tui-plugins.md#durable-npm-package-installations).
 
 ## Continue remotely created work locally
 

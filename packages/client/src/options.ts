@@ -18,7 +18,8 @@ export const usage = `Usage: ocx [-- opencode arguments]
        ocx remote <command> [options]
 
 Without --server, starts ordinary local OpenCode with your existing configuration.
-Open /remote inside OpenCode to create remote threads or move conversations.
+Click the machine and checkout under the prompt, or use Alt+M and Alt+W.
+Open /remote inside OpenCode for connection settings and other remote actions.
 Use ocx remote --help for automation commands.
 
 Options:

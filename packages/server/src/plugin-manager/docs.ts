@@ -41,7 +41,7 @@ export default Plugin.define({
 })
 \`\`\`
 
-The server runs the bundled module in QuickJS. The current context bridge implements \`ctx.tool.transform\`, \`ctx.tool.reload\`, and \`ctx.storage\`. Tools registered here appear beside the plugin manager's tools. The main agent calls them directly.
+The server runs the bundled module in QuickJS. The current context bridge implements \`ctx.tool.transform\` during setup and \`ctx.storage\`. Tool execution can publish progress. Register all tools during setup; changing the tool catalog later, \`ctx.tool.reload\`, and tool context \`signal\` are unsupported. Cancellation interrupts execution. Tools registered here appear beside the plugin manager's tools. The main agent calls them directly.
 
 ## TUI plugins
 

@@ -94,7 +94,7 @@ const entryFor = (plugin: StoredPlugin) =>
       contentType: "application/typescript",
       opencode: { minimumVersion: minimumOpenCodeVersion },
       permissions: { serverOrigins: ["self"], filesystem: false, process: false, network: false },
-      notes: "Agent-authored TUI plugin",
+      notes: plugin.package ? `npm ${plugin.package.name}@${plugin.package.version}` : "Agent-authored TUI plugin",
     })),
   )
 
@@ -146,7 +146,10 @@ export const makeTuiRegistryHandler =
   (store: PluginStoreService, password?: string, events = makeTuiRegistryEvents()) =>
   (request: Request) =>
     Effect.gen(function* () {
-      const parts = routeParts(new URL(request.url))
+      const url = new URL(request.url)
+      const projectID = url.searchParams.get("projectID") ?? request.headers.get("x-ocx-project-id")
+      const visible = (plugin: StoredPlugin) => plugin.package?.scope !== "project" || plugin.package.projectID === projectID
+      const parts = routeParts(url)
       if (parts === undefined) return undefined
       if (request.method !== "GET")
         return json({ error: "Method not allowed" }, 405, { allow: "GET" })
@@ -156,7 +159,7 @@ export const makeTuiRegistryHandler =
 
       if (parts.length === 0) {
         const plugins = (yield* store.list)
-          .filter((plugin) => plugin.enabled && plugin.tuiBundle !== undefined)
+          .filter((plugin) => visible(plugin) && plugin.enabled && plugin.tuiBundle !== undefined)
           .sort((left, right) => left.id.localeCompare(right.id))
         const entries = yield* Effect.forEach(plugins, entryFor, { concurrency: 4 })
         return json({ schemaVersion: 1, plugins: entries } satisfies TuiPluginManifest, 200, {
@@ -169,7 +172,7 @@ export const makeTuiRegistryHandler =
       if (!id || !version || !/^[A-Za-z0-9_-]{1,64}$/.test(id))
         return json({ error: "Not found" }, 404)
       const plugin = yield* store.get(id)
-      if (!plugin?.enabled || plugin.tuiBundle === undefined) {
+      if (!plugin?.enabled || !visible(plugin) || plugin.tuiBundle === undefined) {
         return json({ error: "Plugin artifact not found" }, 404)
       }
       const hash = yield* sha256(plugin.tuiBundle)

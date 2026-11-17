@@ -7,6 +7,8 @@ import { validID, workspacePrefix, type Workspace } from "@ocx/protocol/workspac
 import { deviceName } from "./device-name"
 import { cloudCheckout, groupProjects, projectPrefix, type Project } from "@ocx/protocol/projects"
 import { ProjectCatalog } from "./project-catalog"
+import { ComposerRouter, type ComposerTarget } from "./composer-router"
+import { loadComposerDraft, saveComposerDraft, stageNativeDraft, retargetFileURIs } from "./composer-draft"
 
 interface Connection { server: string; password?: string }
 export interface ControlBridgeOptions {
@@ -46,11 +48,58 @@ export async function createControlBridge(options: ControlBridgeOptions) {
   let mutation: Promise<unknown> = Promise.resolve()
   let stopped = false
   let activeTransfer: string | undefined
+  let autoActivate = false
+  let selectionDirectory: string | undefined
+  const attachmentRoots = new Map<string, { source: string; destination: string }>()
   const timers = new Set<ReturnType<typeof setTimeout>>()
   type Summary = Pick<Journal, "id" | "direction" | "stage" | "workspaceID" | "sourceSessionID" | "directory">
   const summaryCache = new Map<string, { stamp: string; summary: Summary }>()
   let catalog: Promise<ProjectCatalog> | undefined
   const checkouts = () => catalog ??= ProjectCatalog.open(directory)
+  const composer = new ComposerRouter({
+    async create(target, input) {
+      const source = selectionDirectory ?? input.location?.directory
+      const remember = (session: any) => {
+        if (source && session.location?.directory) attachmentRoots.set(session.id, { source, destination: session.location.directory })
+      }
+      if (target.location === "cloud") {
+        let workspaceID = target.workspaceID
+        if (target.newCheckout) {
+          const branch = `agent/task-${target.newCheckout.id.slice(0, 8)}`
+          const result = await api().request<{ workspace: Workspace }>(workspacePrefix, "POST", {
+            id: target.newCheckout.id, source: target.newCheckout.source, branch: target.newCheckout.branch, newBranch: branch, name: branch,
+          })
+          workspaceID = result.workspace.id
+        }
+        const { session } = await api().request(`${workspacePrefix}/${validID(workspaceID!)}/sessions`, "POST", input)
+        remember(session)
+        return { session, launch: { server: api().origin, password: remote?.password, sessionID: session.id, binary: options.binary } }
+      }
+      const checkout = (await checkouts()).get(target.checkoutID!)
+      await (await checkouts()).discover(checkout.directory)
+      const { data: session } = await local.request("/api/session", "POST", { ...input, location: { directory: checkout.directory } })
+      remember(session)
+      return { session, launch: { server: local.origin, password: options.local.password, sessionID: session.id, directory: checkout.directory, binary: options.binary, local: true } }
+    },
+    async forward(launch, request, path) {
+      const content = await request.clone().text()
+      let value = content ? JSON.parse(content) as any : undefined
+      const roots = attachmentRoots.get(launch.sessionID)
+      if (value && roots) value = retargetFileURIs(value, roots.source, roots.destination)
+      // Pasted files already carry their bytes. A local source hint must not
+      // make the cloud try to read a path on the original device.
+      if (!launch.local && Array.isArray(value?.files)) value.files = value.files.map((file: any) => {
+        if (!file.uri?.startsWith("data:")) return file
+        const { source: _, ...rest } = file
+        return rest
+      })
+      return requestFetch(new URL(path, launch.server), { method: request.method, redirect: "error", signal: request.signal,
+        headers: { "content-type": "application/json", ...(launch.password ? { authorization: `Basic ${Buffer.from(`opencode:${launch.password}`).toString("base64")}` } : {}) },
+        body: value === undefined ? undefined : JSON.stringify(value),
+      })
+    },
+    admitted(launch) { pending = launch; autoActivate = true },
+  })
 
   const redact = (message: string) => {
     for (const password of [remote?.password, options.local.password]) {
@@ -209,6 +258,50 @@ export async function createControlBridge(options: ControlBridgeOptions) {
 
   const action = async (input: Record<string, unknown>) => {
     const name = text(input, "action", true)!
+    if (name === "captureDraft") return { id: await saveComposerDraft(directory, input.draft) }
+    if (name === "draftRestored") {
+      const id = text(input, "id", true)!
+      await loadComposerDraft(directory, id)
+      await rm(join(directory, "drafts", id + ".json"), { force: true })
+      return { restored: true }
+    }
+    if (name === "selectComposerTarget") {
+      if (input.target === null) { composer.select(undefined); attachmentRoots.clear(); selectionDirectory = undefined; return { target: null } }
+      const selection = input.target as ComposerTarget
+      if (!selection || !["device", "cloud"].includes(selection.location)) throw new Error("Choose a machine and checkout")
+      let target: ComposerTarget
+      if (selection.location === "device") {
+        const checkout = (await checkouts()).get(validID(selection.checkoutID!))
+        target = { location: "device", checkoutID: checkout.id, machine: deviceName, checkout: checkout.branch ?? checkout.name, projectID: checkout.projectID }
+      } else if (selection.newCheckout) {
+        const source = selection.newCheckout.source
+        if (typeof source !== "string" || !source.startsWith("https://")) throw new Error("Choose a repository for the new checkout")
+        target = { location: "cloud", newCheckout: { id: randomUUID(), source, branch: selection.newCheckout.branch }, machine: "Cloud", checkout: `New checkout${selection.newCheckout.branch ? ` from ${selection.newCheckout.branch}` : ""}`, projectID: text(selection as any, "projectID", true)! }
+      } else {
+        const { workspace } = await api().request<{ workspace: Workspace }>(`${workspacePrefix}/${validID(selection.workspaceID!)}`)
+        if (["transferring", "local"].includes(workspace.state)) throw new Error("This checkout has moved to another machine")
+        target = { location: "cloud", workspaceID: workspace.id, machine: "Cloud", checkout: workspace.branch ?? workspace.name, projectID: cloudCheckout(workspace).projectID }
+      }
+      composer.select(target)
+      attachmentRoots.clear()
+      selectionDirectory = text(input, "directory")
+      return { target }
+    }
+    if (name === "cloudPlugins") return api().request("/api/ocx/plugins")
+    if (name === "installCloudPlugin") {
+      const scope = text(input, "scope", true)
+      if (scope !== "cloud" && scope !== "project") throw new Error("Choose cloud or project scope")
+      return api().request("/api/ocx/plugins", "POST", {
+        package: text(input, "package", true), scope,
+        ...(scope === "project" ? { projectID: text(input, "projectID", true) } : {}),
+      })
+    }
+    if (name === "manageCloudPlugin") {
+      const operation = text(input, "operation", true)
+      if (!["enable", "disable", "remove"].includes(operation!)) throw new Error("Choose a plugin action")
+      const path = `/api/ocx/plugins/${encodeURIComponent(text(input, "id", true)!)}`
+      return operation === "remove" ? api().request(path, "DELETE") : api().request(`${path}/${operation}`, "POST", {})
+    }
     if (name === "projects") {
       const catalog = await checkouts()
       await catalog.refresh()
@@ -322,7 +415,12 @@ export async function createControlBridge(options: ControlBridgeOptions) {
     if (name === "activate") {
       if (!pending) throw new Error("No prepared thread to open")
       const launch = pending
+      const draftID = text(input, "draftID")
+      if (draftID) { await loadComposerDraft(directory, draftID); launch.draftID = draftID }
       pending = undefined
+      autoActivate = false
+      composer.clear()
+      attachmentRoots.clear(); selectionDirectory = undefined
       const timer = setTimeout(() => {
         timers.delete(timer)
         if (stopped) return
@@ -349,7 +447,7 @@ export async function createControlBridge(options: ControlBridgeOptions) {
   const bun = (globalThis as unknown as { Bun: { serve(options: { hostname: string; port: number; maxRequestBodySize: number; fetch(request: Request): Promise<Response> }): { port: number; stop(closeActiveConnections?: boolean): Promise<void> | void } } }).Bun
   let origin = ""
   const server = bun.serve({
-    hostname: "127.0.0.1", port: 0, maxRequestBodySize: 1024 * 1024,
+    hostname: "127.0.0.1", port: 0, maxRequestBodySize: 40 * 1024 * 1024,
     async fetch(request) {
       const url = new URL(request.url)
       if (request.headers.get("host") !== new URL(origin).host || (request.headers.has("origin") && request.headers.get("origin") !== origin)) return json({ error: "Forbidden origin" }, 403)
@@ -366,16 +464,17 @@ export async function createControlBridge(options: ControlBridgeOptions) {
         return json({
           mode, connected, remote: remote ? { server: remote.server } : undefined, local: { server: local.origin },
           progress: current && stages[current.stage] || progress, error, transfers: receipts, pending: pending ? sanitizedLaunch(pending) : undefined,
+          composerTarget: composer.selection, autoActivate,
         })
       }
       if (request.method !== "POST" || url.pathname !== "/action") return json({ error: "Not found" }, 404)
       try {
         const content = await request.text()
-        if (new TextEncoder().encode(content).byteLength > 256 * 1024) throw new Error("Action is too large")
         const input = JSON.parse(content)
         if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Expected an action object")
         const name = text(input, "action", true)!
-        const readonly = ["workspaces", "sessions", "repositories", "branches", "githubStatus"].includes(name)
+        if (new TextEncoder().encode(content).byteLength > (name === "captureDraft" ? 32 * 1024 * 1024 : 256 * 1024)) throw new Error("Action is too large")
+        const readonly = ["workspaces", "sessions", "repositories", "branches", "githubStatus", "cloudPlugins"].includes(name)
         const perform = async () => {
           if (stopped) throw new Error("Launcher is stopping")
           if (!readonly) {
@@ -405,7 +504,21 @@ export async function createControlBridge(options: ControlBridgeOptions) {
     },
   })
   origin = `http://127.0.0.1:${server.port}`
-  return { origin, token, async stop() {
+  return { origin, token,
+    async interceptSubmission(request: Request) {
+      try { return await composer.intercept(request) }
+      catch (cause) { return json({ message: redact(cause instanceof Error ? cause.message : String(cause)) }, cause instanceof ApiError ? cause.status : 400) }
+    },
+    async prepareDraft(id: string, target?: { server: string; password?: string; sessionID?: string }) {
+      const draft = await loadComposerDraft(directory, id)
+      if (draft.directory && target?.sessionID) {
+        const destination = await new RemoteAPI(target.server, target.password, requestFetch).request(`/api/session/${validID(target.sessionID)}`)
+        if (destination.data?.location?.directory) draft.prompt = retargetFileURIs(draft.prompt, draft.directory, destination.data.location.directory)
+      }
+      await stageNativeDraft(draft, id)
+      return draft.cursor
+    },
+    async stop() {
     stopped = true
     abort.abort()
     for (const timer of timers) clearTimeout(timer)

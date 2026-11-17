@@ -24,8 +24,15 @@ export const armRuntime = (runtime: QuickJSRuntime) => deadlines.set(runtime, Da
 const bridgeSource = `
 const __tools = new Map()
 const __executors = new Map()
+let __registrationClosed = false
+const assertRegistration = () => {
+  if (__registrationClosed) throw new Error("Unsupported cloud plugin capability: changing tools after setup")
+}
 const clone = (value) => value === undefined ? undefined : JSON.parse(JSON.stringify(value))
 const publicTool = (tool) => {
+  if (!tool.input || typeof tool.input !== "object" || tool.input["~standard"] || tool.input.ast || typeof tool.input.type !== "string") {
+    throw new Error("Unsupported tool schema: use a JSON Schema object with a type; Effect and Standard Schema codecs are not supported")
+  }
   const { execute, ...definition } = tool
   return clone(definition)
 }
@@ -33,6 +40,7 @@ const draft = {
   list() { return Array.from(__tools.values()).map(publicTool) },
   get(id) { const tool = __tools.get(id); return tool && publicTool(tool) },
   add(tool) {
+    assertRegistration()
     if (!tool || typeof tool.name !== "string" || typeof tool.execute !== "function") {
       throw new TypeError("tools.add requires a tool with name and execute")
     }
@@ -44,18 +52,19 @@ const draft = {
     __executors.set(id, tool.execute)
   },
   update(id, update) {
+    assertRegistration()
     const tool = __tools.get(id)
     if (!tool) return
     update(tool)
     __executors.set(id, tool.execute)
   },
-  remove(id) { __tools.delete(id); __executors.delete(id) },
+  remove(id) { assertRegistration(); __tools.delete(id); __executors.delete(id) },
 }
-const host = (method, value) => __oc_host_call(method, JSON.stringify(value)).then(JSON.parse)
+const host = (method, value) => __oc_host_call(method, JSON.stringify(value)).then(JSON.parse).then(result => result.value)
 globalThis.__oc_context = {
   tool: {
-    transform(callback) { callback(draft); return Promise.resolve({ dispose() {} }) },
-    reload() { return Promise.resolve() },
+    transform(callback) { assertRegistration(); callback(draft); return Promise.resolve({ dispose() {} }) },
+    reload() { return Promise.reject(new Error("Unsupported cloud plugin capability: tool.reload; register tools during setup")) },
   },
   storage: {
     get(key) { return host("storage.get", { key }) },
@@ -64,10 +73,17 @@ globalThis.__oc_context = {
     scan(options) { return host("storage.scan", options || {}) },
   },
 }
-globalThis.__oc_tool_definitions = () => JSON.stringify(Array.from(__tools.values()).map(publicTool))
+globalThis.__oc_tool_definitions = () => {
+  __registrationClosed = true
+  return JSON.stringify(Array.from(__tools.values()).map(publicTool))
+}
 globalThis.__oc_invoke = (id, input, context) => {
   const execute = __executors.get(id)
   if (!execute) throw new Error("Unknown plugin tool: " + id)
+  context.progress = (update) => host("tool.progress", update)
+  Object.defineProperty(context, "signal", {
+    get() { throw new Error("Unsupported cloud plugin capability: tool context signal; cancellation interrupts execution") },
+  })
   return Promise.resolve(execute(input, context)).then((result) => {
     if (typeof result === "string") return { content: result }
     if (!result || typeof result !== "object") return { output: result }
@@ -79,7 +95,8 @@ globalThis.__oc_invoke = (id, input, context) => {
 const errorText = (vm: QuickJSContext, handle: QuickJSHandle): string => {
   const value = vm.dump(handle) as { name?: string; message?: string; stack?: string }
   if (value && typeof value === "object") {
-    return value.stack ?? [value.name, value.message].filter(Boolean).join(": ")
+    const message = [value.name, value.message].filter(Boolean).join(": ")
+    return [message, value.stack].filter(Boolean).join("\n")
   }
   return String(value)
 }
@@ -164,11 +181,11 @@ export const loadModule = async (source: string): Promise<LoadedModule> => {
     if (vm.typeof(plugin) !== "object") throw new Error("Plugin must have a default object export")
     using idHandle = vm.getProp(plugin, "id")
     const id = vm.getString(idHandle)
-    if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) {
-      throw new Error("Plugin id must match [A-Za-z0-9_-]{1,64}")
+    if (!/^[A-Za-z0-9_@./-]{1,128}$/.test(id)) {
+      throw new Error("Plugin id must be a nonempty portable identifier up to 128 characters")
     }
     using setup = vm.getProp(plugin, "setup")
-    if (vm.typeof(setup) !== "function") throw new Error("Plugin setup must be a function")
+    if (vm.typeof(setup) !== "function") throw new Error("Unsupported plugin runtime: expected Promise Plugin.define({ id, setup }); Effect plugins are not supported")
     return { id, runtime, vm, plugin: plugin.dup() }
   } catch (error) {
     vm.dispose()

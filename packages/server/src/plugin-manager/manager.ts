@@ -17,7 +17,7 @@ import { evaluate, OperationError } from "@ocx/protocol/errors"
 import type { PluginStoreService } from "./store"
 import { bundlePluginFiles } from "./bundler"
 import { pluginDocs } from "./docs"
-import { inspectPluginSource, makeQuickJSPlugin } from "./quickjs"
+import { inspectPluginSource, validatePluginSetup, makeQuickJSPlugin } from "./quickjs"
 import type { LivePluginRegistry } from "./registry"
 import type { StoredPlugin } from "./types"
 const workspaceToolNames = new Set(["plugin_workspace_read", "plugin_workspace_write", "plugin_workspace_edit", "plugin_workspace_remove", "plugin_workspace_glob", "plugin_workspace_grep"])
@@ -44,6 +44,7 @@ const validateWorkspace = Effect.fn("PluginManager")(function* (workspace: Plugi
   const bundles = yield* bundlePluginFiles(workspace.files)
   if (bundles.serverBundle !== undefined) {
     const bundled = yield* inspectPluginSource(bundles.serverBundle)
+    yield* validatePluginSetup(bundles.serverBundle)
     if (bundled.id !== inspected.id) {
       return yield* Effect.fail(
         new OperationError({
@@ -385,6 +386,7 @@ export const makePluginManager = (store: PluginStoreService, registry: LivePlugi
           execute: toolEffect(function* (input, toolContext) {
             const existing = yield* store.get(validateID(input.id))
             if (existing === undefined) throw new Error(`Plugin not found: ${input.id}`)
+            if (existing.package) throw new Error("Package installations cannot be edited by the author; remove and reinstall the package")
             const current = yield* context.session.get({ sessionID: toolContext.sessionID })
             const result = yield* runAuthor({
               prompt: input.prompt,

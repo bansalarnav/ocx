@@ -36,6 +36,24 @@ const acquire = (source: string) =>
     attempt("Load QuickJS module", () => loadModule(source)),
     dispose,
   )
+// Setup validation uses disposable storage and cannot perform network calls or durable writes.
+export const validatePluginSetup = (source: string) => Effect.scoped(acquire(source).pipe(
+  Effect.flatMap(({ vm, runtime, plugin }) => guestCall("Validate plugin capabilities", async (signal) => {
+    using offline = unwrap(vm, vm.evalCode(`globalThis.__oc_host_call = async (method, input) => {
+      if (method === "storage.get") return "{}";
+      if (method === "storage.scan") return JSON.stringify({ value: { entries: [] } });
+      if (method === "storage.set" || method === "storage.remove") return "{}";
+      throw new Error("Unsupported validation host call: " + method);
+    }`, "offline-validation.js"))
+    using setup = vm.getProp(plugin, "setup")
+    using context = vm.getProp(vm.global, "__oc_context")
+    armRuntime(runtime)
+    using result = vm.callFunction(setup, plugin, context).unwrap()
+    using settled = await waitForPromise(vm, runtime, result, signal)
+    using definitions = vm.getProp(vm.global, "__oc_tool_definitions")
+    using checked = vm.callFunction(definitions, vm.undefined).unwrap()
+  })),
+))
 export const inspectPluginSource = (source: string) =>
   Effect.scoped(acquire(source).pipe(Effect.map(({ id }) => ({ id }))))
 
@@ -74,7 +92,25 @@ const toolID = (definition: Definition) =>
     ? `${definition.options.namespace.replaceAll(".", "_")}_${definition.name.replace(/[^a-zA-Z0-9_-]/g, "_")}`
     : definition.name.replace(/[^a-zA-Z0-9_-]/g, "_")
 
-export const makeQuickJSPlugin = (stored: StoredPlugin, activation?: ActivationSignal) =>
+// Keep package names within provider function-name limits without narrowing the
+// durable installation identity or dropping the original guest tool identity.
+const packageToolDefinitions = async (stored: StoredPlugin, definitions: Definition[]) => {
+  if (!stored.package) return definitions
+  const namespace = "pkg_" + stored.id.slice(4, 28)
+  return Promise.all(definitions.map(async definition => {
+    const original = toolID(definition)
+    const room = 64 - namespace.length - 1
+    let name = original
+    if (name.length > room) {
+      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(original))
+      const suffix = Array.from(new Uint8Array(digest).slice(0, 6), b => b.toString(16).padStart(2, "0")).join("")
+      name = name.slice(0, room - suffix.length - 1) + "_" + suffix
+    }
+    return { ...definition, name, options: { ...definition.options, namespace } }
+  }))
+}
+
+export const makeQuickJSPlugin = (stored: StoredPlugin, activation?: ActivationSignal, projectForSession?: (id: string) => Promise<string | undefined>) =>
   define({
     id: stored.id,
     effect: (context) =>
@@ -84,9 +120,21 @@ export const makeQuickJSPlugin = (stored: StoredPlugin, activation?: ActivationS
           return yield* Effect.fail(new Error(`Plugin ${stored.id} has no server entrypoint`))
         const loaded = yield* acquire(source)
         const { runtime, vm, plugin } = loaded
-        if (loaded.id !== stored.id)
+        if (loaded.id !== (stored.runtimeID ?? stored.id))
           return yield* Effect.fail(new Error(`Stored id ${stored.id} does not match ${loaded.id}`))
+        const allowed = (sessionID: string) => Effect.gen(function* () {
+          if (stored.package?.scope !== "project") return true
+          const project = projectForSession ? yield* attempt("Resolve plugin project", () => projectForSession(sessionID)) : undefined
+          if (project !== undefined) return project === stored.package.projectID
+          const session = yield* context.session.get({ sessionID: sessionID as never })
+          return session.location.directory === stored.package.projectID
+        })
+        let hostDefinitions: Definition[] = []
+        if (stored.package?.scope === "project") yield* context.session.hook("context", event => allowed(event.sessionID).pipe(Effect.map(ok => {
+          if (!ok) for (const definition of hostDefinitions) delete event.tools[toolID(definition)]
+        })).pipe(Effect.orDie))
         const serial = yield* Semaphore.make(1)
+        let activeToolContext: Tool.Context | undefined
         // Foreign guest callbacks enter this scoped fiber set; all host calls stop before VM disposal.
         const fork = yield* FiberSet.makeRuntime<never>()
         yield* evaluate("Install QuickJS host bridge", () => {
@@ -94,13 +142,16 @@ export const makeQuickJSPlugin = (stored: StoredPlugin, activation?: ActivationS
             const method = vm.getString(methodHandle)
             const input: unknown = JSON.parse(vm.getString(inputHandle))
             const deferred = vm.newPromise()
+            const operation = method === "tool.progress"
+              ? activeToolContext ? activeToolContext.progress(input as Tool.Metadata).pipe(Effect.as(null)) : Effect.fail(new Error("No active tool for progress update"))
+              : callHost(context, method, input)
             fork(
-              callHost(context, method, input).pipe(
+              operation.pipe(
                 Effect.matchCauseEffect({
                   onSuccess: (result) =>
                     Effect.sync(() => {
                       if (!vm.alive) return
-                      using value = vm.newString(JSON.stringify(result ?? null))
+                      using value = vm.newString(JSON.stringify({ value: result }))
                       deferred.resolve(value)
                     }),
                   onFailure: (cause) =>
@@ -128,16 +179,20 @@ export const makeQuickJSPlugin = (stored: StoredPlugin, activation?: ActivationS
           using result = vm.callFunction(fn, vm.undefined).unwrap()
           return JSON.parse(vm.getString(result)) as Definition[]
         })
+        hostDefinitions = yield* attempt("Name package tools", () => packageToolDefinitions(stored, definitions))
         yield* context.tool.transform((tools) => {
-          for (const definition of definitions) {
+          for (const [index, definition] of definitions.entries()) {
             const id = toolID(definition)
-            if (tools.get(id)) throw new Error(`Plugin tool collides with existing tool: ${id}`)
+            const hostDefinition = hostDefinitions[index]!
+            if (tools.get(toolID(hostDefinition))) throw new Error(`Plugin tool collides with existing tool: ${id}`)
             tools.add({
-              ...definition,
+              ...hostDefinition,
               execute: (input, toolContext) =>
-                serial
+                allowed(toolContext.sessionID).pipe(Effect.flatMap(ok => ok ? serial
                   .withPermit(
                     guestCall("Execute guest tool", async (signal) => {
+                      activeToolContext = toolContext
+                      try {
                       using invoke = vm.getProp(vm.global, "__oc_invoke")
                       using idHandle = vm.newString(id)
                       using inputHandle = vm.newString(JSON.stringify(input))
@@ -160,9 +215,11 @@ export const makeQuickJSPlugin = (stored: StoredPlugin, activation?: ActivationS
                         .unwrap()
                       using result = await waitForPromise(vm, runtime, call, signal)
                       return vm.dump(result) as Tool.Result
+                      } finally { activeToolContext = undefined }
                     }),
                   )
-                  .pipe(Effect.mapError((error) => Tool.Error.make({ message: error.message }))),
+                  : Effect.fail(new Error("Plugin is not enabled for this project"))),
+                    Effect.mapError((error) => Tool.Error.make({ message: String(error) }))),
             })
           }
         })

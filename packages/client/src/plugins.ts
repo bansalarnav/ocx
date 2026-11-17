@@ -56,7 +56,7 @@ export class Plugins extends Context.Service<
   }
 >()("ocx/Plugins") {}
 
-export const pluginsLayer = (options: Options, env = process.env, behavior: { deferInitialApprovals?: boolean } = {}) =>
+export const pluginsLayer = (options: Options, env = process.env, behavior: { deferInitialApprovals?: boolean; projectID?: string } = {}) =>
   Layer.effect(
     Plugins,
     Effect.gen(function* () {
@@ -66,6 +66,7 @@ export const pluginsLayer = (options: Options, env = process.env, behavior: { de
       const serverDir = join(options.dataRoot, "servers", hash(options.origin).slice(0, 32))
       const approvalPath = join(serverDir, "approvals.json")
       const manifestPath = "/api/generated-plugins/tui"
+      const endpoint = (suffix = "") => `${manifestPath}${suffix}${behavior.projectID ? `?projectID=${encodeURIComponent(behavior.projectID)}` : ""}`
       const artifactPath = (id: string, sha256: string) =>
         join(serverDir, "plugins", id, sha256, "tui.tsx")
       const fetch = Effect.fn("Plugins.fetch")(function* (path: string) {
@@ -77,7 +78,7 @@ export const pluginsLayer = (options: Options, env = process.env, behavior: { de
         return response
       })
       const manifest = Effect.gen(function* () {
-        const response = yield* fetch(manifestPath)
+        const response = yield* fetch(endpoint())
         const json = yield* attempt("Read plugin manifest", () => response.json())
         const value = yield* Schema.decodeUnknownEffect(PluginManifestSchema)(json).pipe(
           Effect.mapError((cause) => problem(String(cause))),
@@ -129,7 +130,7 @@ export const pluginsLayer = (options: Options, env = process.env, behavior: { de
           const bytes = (yield* fs.exists(path))
             ? yield* fs.readFile(path)
             : yield* fetch(
-                `${manifestPath}/${encodeURIComponent(plugin.id)}/${encodeURIComponent(plugin.version)}`,
+                endpoint(`/${encodeURIComponent(plugin.id)}/${encodeURIComponent(plugin.version)}`),
               ).pipe(
                 Effect.flatMap((response) =>
                   attempt("Download plugin", () => response.arrayBuffer()),
@@ -338,7 +339,7 @@ export const pluginsLayer = (options: Options, env = process.env, behavior: { de
       const watch = (client: ClientFiles) =>
         Effect.scoped(
           Effect.gen(function* () {
-            const response = yield* fetch(`${manifestPath}/events`)
+            const response = yield* fetch(endpoint("/events"))
             if (!response.body) return yield* Effect.fail(problem("Missing registry event body"))
             const reader = yield* Effect.acquireRelease(
               Effect.sync(() => response.body!.getReader()),

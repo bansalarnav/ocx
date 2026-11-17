@@ -8,10 +8,11 @@ function fixture(mode: "local" | "remote" = "local", connected = true) {
   const state: WorkspaceUIState = { mode, connected, transfers: [] }
   const workspace = { id: "workspace", name: "My app", root: "/repo", state: "ready", sessionIDs: ["ses_remote"] }
   const checkout = { id: "workspace", projectID: "repo:github.com/acme/app", projectName: "acme/app", name: "My app", location: "cloud", directory: "/repo", state: "ready", source: "https://github.com/acme/app.git" }
-  const project = { id: checkout.projectID, name: checkout.projectName, source: checkout.source, checkouts: [checkout] }
+  const deviceCheckout = { ...checkout, id: "device-checkout", location: "device", deviceID: "this-device", hostname: "device-host", branch: "main", state: "available" }
+  const project = { id: checkout.projectID, name: checkout.projectName, source: checkout.source, checkouts: [checkout, deviceCheckout] }
   const responses: Record<string, any> = {
     workspaces: { workspaces: [workspace] }, sessions: { sessions: [{ id: "ses_remote", title: "Fix login" }] },
-    projects: { projects: [project], deviceID: "this-device" }, checkoutSessions: { sessions: [{ id: "ses_remote", title: "Fix login" }] },
+    projects: { projects: [project], deviceID: "this-device", currentCheckoutID: "device-checkout" }, checkoutSessions: { sessions: [{ id: "ses_remote", title: "Fix login" }] },
     createCheckout: { checkout: { ...checkout, id: "new-checkout", name: "Login" } },
     githubStatus: { connected: true }, repositories: [{ full_name: "acme/app", default_branch: "main" }],
     branches: [{ name: "main" }, { name: "release" }],
@@ -21,6 +22,10 @@ function fixture(mode: "local" | "remote" = "local", connected = true) {
     action: async (action, input) => {
       calls.push({ action, input })
       if (action === "configure") state.connected = true
+      if (action === "selectComposerTarget") {
+        state.composerTarget = input?.target as any
+        return { target: state.composerTarget }
+      }
       return responses[action] ?? (["new", "createConversation", "openConversation", "send", "receive", "switch", "recover"].includes(action) ? { launch: { sessionID: "ses_destination" } } : {})
     },
   }
@@ -88,15 +93,15 @@ test("workspace browsing selects a named thread and switches without an attach c
   } finally { f.stop() }
 })
 
-test("new cloud checkout is separate from its first conversation and opens the conversation automatically", async () => {
+test("new cloud checkout selects the native composer without asking for task text or starting a conversation", async () => {
   const f = fixture()
   try {
     f.selections.push("repo:github.com/acme/app", "__new", "new", "main")
-    f.prompts.push("agent/login", "Login", "Fix login")
+    f.prompts.push("agent/login", "Login")
     await f.run("ocx.new")
     expect(f.calls.find(call => call.action === "createCheckout")?.input).toEqual({ source: "https://github.com/acme/app.git", branch: "main", newBranch: "agent/login", name: "Login" })
-    expect(f.calls.find(call => call.action === "createConversation")?.input).toEqual({ workspaceID: "new-checkout", prompt: "Fix login", model: { providerID: "acme", id: "coder" } })
-    expect(f.calls.at(-1)?.action).toBe("activate")
+    expect(f.calls.at(-1)).toEqual({ action: "selectComposerTarget", input: { target: { location: "cloud", workspaceID: "new-checkout" }, directory: "/repo" } })
+    expect(f.calls.some(call => ["createConversation", "activate"].includes(call.action))).toBe(false)
     expect(f.alerts).toEqual([])
   } finally { f.stop() }
 })
@@ -105,10 +110,9 @@ test("another conversation reuses an existing cloud checkout without asking for 
   const f = fixture("remote")
   try {
     f.selections.push("repo:github.com/acme/app", "workspace")
-    f.prompts.push("Investigate the tests")
     await f.run("ocx.new")
-    expect(f.calls.map(c => c.action)).toEqual(["projects", "createConversation", "activate"])
-    expect(f.calls[1].input?.workspaceID).toBe("workspace")
+    expect(f.calls.map(c => c.action)).toEqual(["projects", "selectComposerTarget"])
+    expect(f.calls[1].input?.target).toEqual({ location: "cloud", workspaceID: "workspace" })
     expect(f.alerts).toEqual([])
   } finally { f.stop() }
 })
@@ -116,10 +120,36 @@ test("another conversation reuses an existing cloud checkout without asking for 
 test("a new conversation in the current checkout inherits the remote checkout", async () => {
   const f = fixture("remote")
   try {
-    f.prompts.push("")
     await f.run("ocx.here")
-    expect(f.calls.map(c => c.action)).toEqual(["projects", "createConversation", "activate"])
-    expect(f.calls[1].input?.workspaceID).toBe("workspace")
+    expect(f.calls.map(c => c.action)).toEqual(["projects", "selectComposerTarget"])
+    expect(f.calls[1].input?.target).toEqual({ location: "cloud", workspaceID: "workspace" })
+    expect(f.alerts).toEqual([])
+  } finally { f.stop() }
+})
+
+test("machine and checkout controls select a deferred cloud destination; cancel does not change it", async () => {
+  const f = fixture()
+  try {
+    f.selections.push("cloud", "workspace")
+    await f.run("ocx.machine")
+    expect(f.calls.map(c => c.action)).toEqual(["projects", "selectComposerTarget"])
+    expect(f.calls.at(-1)?.input?.target).toEqual({ location: "cloud", workspaceID: "workspace" })
+    const count = f.calls.length
+    await f.run("ocx.machine")
+    expect(f.calls).toHaveLength(count)
+    expect(f.alerts).toEqual([])
+  } finally { f.stop() }
+})
+
+test("cloud plugin manager installs a package for the selected project inside OpenCode", async () => {
+  const f = fixture()
+  try {
+    f.responses.cloudPlugins = { plugins: [] }
+    f.responses.installCloudPlugin = { plugin: { warnings: [] } }
+    f.selections.push("__install", "project")
+    f.prompts.push("@acme/plugin@1.2.3")
+    await f.run("ocx.plugins")
+    expect(f.calls.find(c => c.action === "installCloudPlugin")?.input).toEqual({ package: "@acme/plugin@1.2.3", scope: "project", projectID: "repo:github.com/acme/app" })
     expect(f.alerts).toEqual([])
   } finally { f.stop() }
 })

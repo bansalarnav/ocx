@@ -280,13 +280,13 @@ export class WorkspaceManager {
     })
   }
 
-  async createSession(id: string, input: { title?: string; prompt?: string; model?: unknown } = {}) {
+  async createSession(id: string, input: { id?: string; title?: string; prompt?: string; model?: unknown; agent?: unknown; permissions?: unknown; metadata?: unknown } = {}) {
     const initial = await this.get(id)
     if (["preparing", "failed"].includes(initial.state)) await this.provision(id)
     return this.exclusive(id, async () => {
     const workspace = await this.get(id)
     if (workspace.state !== "ready" && workspace.state !== "paused") throw new Error("Workspace is not ready")
-    const result = await this.api("/api/session", "POST", { title: input.title, model: input.model, location: { directory: workspace.root } })
+    const result = await this.api("/api/session", "POST", { id: input.id, title: input.title, model: input.model, agent: input.agent, permissions: input.permissions, metadata: input.metadata, location: { directory: workspace.root } })
     await this.update(id, current => {
       if (!current.sessionIDs.includes(result.data.id)) current.sessionIDs.push(result.data.id)
       if (current.conversationCount !== undefined) current.conversationCount++

@@ -118,7 +118,7 @@ interface Receipt {
   handoff?: Handoff
 }
 
-export interface RemoteLaunch { server: string; password?: string; sessionID: string; directory?: string; binary: string; local?: boolean }
+export interface RemoteLaunch { server: string; password?: string; sessionID: string; directory?: string; binary: string; local?: boolean; draftID?: string }
 interface Dependencies { fetch?: typeof fetch; log?: (text: string) => void }
 
 export async function runRemoteCommand(options: RemoteOptions, dependencies: Dependencies = {}): Promise<RemoteLaunch | undefined> {
