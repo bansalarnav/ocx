@@ -143,7 +143,12 @@ export async function captureCheckpoint(input: {
       throw new Error("Resolve index conflicts before transferring the workspace")
     const indexTree = await output(directory, ["write-tree"], { env })
     await treeEntries(directory, indexTree)
-    await git(directory, ["add", "--update", "--", "."], { env })
+    const tracked = await git(directory, ["ls-files", "-z"], { env })
+    // Rebuild only the temporary index so Git hashes working files again.
+    // Copied stat caches and assume-unchanged bits can hide same-size edits.
+    await git(directory, ["read-tree", "--empty"], { env })
+    await git(directory, ["read-tree", indexTree], { env })
+    if (tracked.length) await git(directory, ["update-index", "--add", "--remove", "-z", "--stdin"], { env, input: tracked })
     const worktreeTree = await output(directory, ["write-tree"], { env })
     const untracked = await git(directory, ["ls-files", "--others", "--exclude-standard", "-z"])
     await git(directory, ["read-tree", "--empty"], { env })

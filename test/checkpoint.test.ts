@@ -110,6 +110,21 @@ describe("Git workspace checkpoints", () => {
     expect(sourceIndex.length).toBeGreaterThan(0)
   })
 
+  test("captures edits hidden by assume-unchanged without altering the source index", async () => {
+    const { source, remote, destination } = await setup()
+    await git(source, "update-index", "--assume-unchanged", "binary.bin")
+    await writeFile(join(source, "binary.bin"), Buffer.from([0, 5, 4, 3]))
+    await writeFile(join(source, "intent.txt"), "not yet staged\n")
+    await git(source, "add", "--intent-to-add", "intent.txt")
+    const index = await readFile(join(source, ".git", "index"))
+    const checkpoint = await captureCheckpoint({ directory: source, workspaceID: "stat-cache" })
+    expect(await readFile(join(source, ".git", "index"))).toEqual(index)
+    await pushCheckpoint(source, checkpoint, { url: remote })
+    await restoreCheckpoint({ directory: destination, remote: { url: remote }, ref: checkpoint.ref })
+    expect(await readFile(join(destination, "binary.bin"))).toEqual(Buffer.from([0, 5, 4, 3]))
+    expect(await readFile(join(destination, "intent.txt"), "utf8")).toBe("not yet staged\n")
+  })
+
   test("restores detached HEAD and refuses a populated destination", async () => {
     const { source, remote, destination } = await setup()
     await git(source, "checkout", "--detach")
