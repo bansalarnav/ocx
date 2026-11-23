@@ -201,7 +201,7 @@ export function setupWorkspaceUI(ctx: Context, bridge: WorkspaceUIBridge) {
     const existing = route.type === "session" && (ctx.data.session.message?.list(route.sessionID)?.length ?? 0) > 0
     const chosen = await ctx.ui.dialog.select({ title: existing ? "Continue this conversation on…" : "Run on…", options: [
       { title: deviceName, value: "device", description: "This device" },
-      { title: "Cloud", value: "cloud", description: existing ? "Move this conversation and checkout" : "Compute starts when you send" },
+      { title: "Cloud", value: "cloud", description: existing ? "Move this conversation and checkout" : "Run a session on a cloud machine" },
     ] })
     if (!chosen) return
     if (existing) {
