@@ -1,7 +1,9 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "opencode-durable-object",
-  "main": "packages/server/src/index.ts",
+  "account_id": "d236b76dd344e9e40f824825882c003f",
+  "main": "packages/server/src/bootstrap.ts",
+  "vars": { "MARITIME_TEMPLATE": "ocx-code-v1" },
   "minify": true,
   "compatibility_date": "2026-08-26",
   "compatibility_flags": ["nodejs_compat"],
