@@ -109,7 +109,7 @@ function runRemoteTui(input: TuiLaunch, options: Options): Promise<number> {
       const files = yield* plugins.prepare
       const child = yield* ChildProcess.make(input.target.binary,
         ["--server", proxy.origin, ...(input.target.sessionID ? ["--session", input.target.sessionID] : []), ...input.childArgs], {
-          stdin: "inherit", stdout: "inherit", stderr: "inherit", extendEnv: true,
+          stdin: "inherit", stdout: "inherit", stderr: "inherit", extendEnv: true, detached: false,
           ...(input.target.directory ? { cwd: input.target.directory } : {}),
           env: {
             ...input.env, OPENCODE_PASSWORD: proxy.password, OPENCODE_CONFIG_DIR: files.configDir,
