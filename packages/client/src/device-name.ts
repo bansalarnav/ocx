@@ -1,3 +1,3 @@
-import { hostname } from "node:os"
+import { hostname, platform } from "node:os"
 
-export const deviceName = hostname()
+export const deviceName = process.env.OCX_DEVICE_NAME?.trim() || (platform() === "darwin" ? "macbook" : hostname())
