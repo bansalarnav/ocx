@@ -5,7 +5,7 @@ export function createLocalTuiProxy(serverOrigin: string, password: string | und
   const secret = randomBytes(32).toString("hex")
   const expected = Buffer.from(`Basic ${Buffer.from(`opencode:${secret}`).toString("base64")}`)
   let origin = ""
-  const server = (globalThis as any).Bun.serve({ hostname: "127.0.0.1", port: 0, maxRequestBodySize: 40 * 1024 * 1024,
+  const server = (globalThis as any).Bun.serve({ hostname: "127.0.0.1", port: 0, idleTimeout: 0, maxRequestBodySize: 40 * 1024 * 1024,
     async fetch(request: Request) {
       const url = new URL(request.url)
       const supplied = Buffer.from(request.headers.get("authorization") ?? "")
