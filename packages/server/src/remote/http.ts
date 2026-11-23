@@ -47,6 +47,7 @@ export function workspaceHandler(manager: WorkspaceManager) {
       }
       if (isWorkspace && parts[0]) {
         const id = validID(parts[0]); const action = parts[1]
+        if (parts.length === 1 && request.method === "DELETE") return json(await manager.remove(id))
         if (!action && request.method === "GET") return json({ workspace: await manager.get(id) })
         if (action === "sessions" && request.method === "GET") return json({ sessions: await manager.sessions(id) })
         if (request.method === "POST") {
@@ -68,7 +69,7 @@ export function workspaceHandler(manager: WorkspaceManager) {
       return json({ error: "Unknown workspace operation" }, 404)
     } catch (error) {
       const message = error instanceof Error ? error.message : "Workspace operation failed"
-      return json({ error: message }, /not found/i.test(message) ? 404 : /ownership|not ready|not available|cannot be settled/i.test(message) ? 409 : 400)
+      return json({ error: message }, /not found/i.test(message) ? 404 : /ownership|not ready|not available|cannot be settled|cannot delete/i.test(message) ? 409 : 400)
     }
   }
 }

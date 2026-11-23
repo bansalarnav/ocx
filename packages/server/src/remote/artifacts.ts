@@ -10,10 +10,16 @@ export interface ArtifactHandle {
 export interface ArtifactBinding {
   create(name: string, options?: { setDefaultBranch?: string; description?: string }): Promise<{ remote: string; token: string }>
   get(name: string): Promise<ArtifactHandle>
+  delete?(name: string): Promise<boolean>
 }
 
 export class RepositoryStore {
   constructor(private readonly binding: ArtifactBinding) {}
+
+  async remove(name: string) {
+    if (!this.binding.delete) throw new Error("Artifacts deletion is not available")
+    await this.binding.delete(name)
+  }
 
   async create(name: string) {
     const result = await this.binding.create(name, { setDefaultBranch: "main", description: "OpenCode workspace checkpoints" })

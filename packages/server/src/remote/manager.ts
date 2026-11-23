@@ -18,13 +18,14 @@ export interface WorkspaceEnv extends ComputeEnv, GitHubEnv {
 export interface WorkspaceStorage {
   get<T>(key: string): Promise<T | undefined>
   put<T>(key: string, value: T): Promise<unknown>
+  delete?(key: string): Promise<unknown>
   list<T>(options: { prefix: string }): Promise<Map<string, T>>
   transaction?<T>(action: (storage: WorkspaceStorage) => Promise<T>): Promise<T>
 }
 type OpenCodeAPI = (path: string, method?: string, body?: unknown) => Promise<any>
 export interface WorkspaceDependencies {
-  compute?: Pick<Compute, "create" | "run" | "pause" | "url">
-  repositories?: Pick<RepositoryStore, "create" | "access">
+  compute?: Pick<Compute, "create" | "run" | "pause" | "url"> & Partial<Pick<Compute, "destroy">>
+  repositories?: Pick<RepositoryStore, "create" | "access"> & Partial<Pick<RepositoryStore, "remove">>
 }
 const key = (id: string) => `ocx/workspaces/${validID(id)}`
 interface ManagedWorkspace extends Workspace {
@@ -51,7 +52,7 @@ print(json.dumps(result))
 export class WorkspaceManager {
   private readonly locks = new Map<string, Promise<unknown>>()
   private readonly writers = new CheckoutWriters()
-  private compute?: Pick<Compute, "create" | "run" | "pause" | "url">
+  private compute?: WorkspaceDependencies["compute"]
   constructor(readonly storage: WorkspaceStorage, readonly env: WorkspaceEnv, readonly api: OpenCodeAPI, private readonly dependencies: WorkspaceDependencies = {}) {}
 
   private repositories() {
@@ -116,6 +117,37 @@ export class WorkspaceManager {
     const workspace = await this.storage.get<ManagedWorkspace>(key(id))
     if (!workspace) throw new Error("Workspace not found")
     return workspace
+  }
+  /** Freeze execution durably before removing external resources. Failed cleanup can be retried. */
+  async remove(id: string) {
+    return this.exclusive(id, () => this.exclusive(`checkpoint:${id}`, async () => {
+      let workspace = await this.get(id)
+      if (["transferring", "local"].includes(workspace.state)) throw new Error("Cannot delete checkout while ownership belongs to a handoff")
+      const machine = workspace.sandboxID ? this.machine() : undefined
+      const repositories = this.repositories()
+      if (!this.storage.delete || !repositories.remove || (machine && !machine.destroy)) throw new Error("Checkout deletion is not available")
+      const previousState = workspace.state
+      workspace = await this.update(id, current => { current.state = "deleting" })
+      const active = Object.keys((await this.api("/api/session/active")).data)
+      const roots = await this.sessions(id)
+      const sessionIDs = new Set([...workspace.sessionIDs, ...roots.map(session => session.id)])
+      for (const sessionID of active) {
+        if ((await this.forSession(sessionID))?.id === id) sessionIDs.add(sessionID)
+      }
+      const busy = active.some(sessionID => sessionIDs.has(sessionID)) || (await Promise.all([...sessionIDs].map(async sessionID => {
+        const inbox = await this.api(`/api/session/${validID(sessionID)}/inbox`)
+        return inbox.data.length > 0
+      }))).some(Boolean)
+      if (busy) {
+        await this.update(id, current => { current.state = previousState })
+        throw new Error("Cannot delete checkout with active or queued sessions")
+      }
+      for (const sessionID of sessionIDs) await this.api(`/api/session/${validID(sessionID)}`, "PATCH", { archived: true })
+      if (workspace.sandboxID) await machine!.destroy!(workspace.sandboxID)
+      await repositories.remove(workspace.repository)
+      await this.storage.delete(key(id))
+      return { ok: true, id }
+    }))
   }
   async resolve(directory: string) {
     return (await this.list()).find(w => directory === w.root || directory.startsWith(w.root + "/"))
@@ -192,6 +224,7 @@ export class WorkspaceManager {
 
   async run(id: string, command: string, options: { timeoutSeconds?: number; signal?: AbortSignal; stdin?: string } = {}) {
     let workspace = await this.get(id)
+    if (workspace.state === "deleting") throw new Error("Workspace is not available for execution")
     if (!workspace.sandboxID) throw new Error("Workspace has no sandbox")
     if (workspace.state === "paused") workspace = await this.update(id, current => {
       if (current.state === "paused") current.state = "ready"

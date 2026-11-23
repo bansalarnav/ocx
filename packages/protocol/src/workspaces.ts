@@ -13,7 +13,7 @@ export interface Workspace {
   sessionIDs: string[]
   /** Cached visible root conversations; sessionIDs also tracks subagents. */
   conversationCount?: number
-  state: "preparing" | "ready" | "paused" | "transferring" | "local" | "failed"
+  state: "preparing" | "ready" | "paused" | "transferring" | "local" | "failed" | "deleting"
   generation: number
   /** Durable identity of the operation currently holding execution ownership. */
   handoffID?: string

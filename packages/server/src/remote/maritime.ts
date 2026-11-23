@@ -44,6 +44,12 @@ export class Compute {
   }
 
   async pause(id: string) { await (await this.client.sandboxes.get(id)).pause() }
+  async destroy(id: string) {
+    try { await (await this.client.sandboxes.get(id)).kill() }
+    catch (error) {
+      if (!["sandbox_not_found", "sandbox_ended"].includes((error as { code?: string }).code ?? "")) throw error
+    }
+  }
   async url(id: string, port: number) { return (await this.client.sandboxes.get(id)).url(port) }
 }
 
