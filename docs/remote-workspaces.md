@@ -113,6 +113,8 @@ bunx wrangler secret put MARITIME_API_KEY
 
 Artifacts requires Workers Paid. Maritime needs sandbox access and a template containing `git`, Node.js, Python 3, `rg`, `/bin/bash`, and GNU coreutils. Set `MARITIME_TEMPLATE` to that image or snapshot name; `base` is used otherwise. Provisioning checks these tools before cloning.
 
+`MARITIME_VCPU` and `MARITIME_MEMORY_MIB` optionally override the template's compute size. This deployment uses 1 vCPU and 2048 MiB for checkout commands; the OpenCode server and model requests run on Cloudflare. Increase these values for builds that need more resources.
+
 For GitHub, configure `GITHUB_CLIENT_ID` for an OAuth app with device authorization enabled, or set `GITHUB_TOKEN` as a Worker secret. Private repository access and PR creation require the corresponding GitHub permissions. Everyone with the server password shares the connection in this single-owner deployment.
 
 Deploy the server:

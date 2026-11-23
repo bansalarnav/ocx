@@ -4,6 +4,8 @@ export interface ComputeEnv {
   MARITIME_API_KEY?: string
   MARITIME_TEMPLATE?: string
   MARITIME_API_URL?: string
+  MARITIME_VCPU?: number
+  MARITIME_MEMORY_MIB?: number
 }
 
 export class Compute {
@@ -14,9 +16,15 @@ export class Compute {
   }
 
   async create(workspaceID: string) {
+    const vcpu = this.env.MARITIME_VCPU
+    const memoryMib = this.env.MARITIME_MEMORY_MIB
+    if (vcpu !== undefined && (!Number.isInteger(vcpu) || vcpu < 1 || vcpu > 16)) throw new Error("MARITIME_VCPU must be an integer from 1 to 16")
+    if (memoryMib !== undefined && (!Number.isInteger(memoryMib) || memoryMib < 1024 || memoryMib > 65536 || memoryMib % 1024 !== 0)) throw new Error("MARITIME_MEMORY_MIB must be a multiple of 1024 from 1024 to 65536")
     const box = await this.client.sandboxes.create({
       name: `ocx-${workspaceID}`,
       from: this.env.MARITIME_TEMPLATE ?? "base",
+      ...(vcpu === undefined ? {} : { vcpu }),
+      ...(memoryMib === undefined ? {} : { memoryMib }),
       idleTimeoutSeconds: 900,
       onIdle: "pause",
       metadata: { workspace: workspaceID, application: "ocx" },
