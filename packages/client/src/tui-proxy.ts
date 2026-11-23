@@ -16,8 +16,13 @@ export function createLocalTuiProxy(serverOrigin: string, password: string | und
         if (handled) return handled
         const headers = new Headers(request.headers)
         headers.delete("host"); headers.delete("authorization"); headers.delete("origin")
+        headers.set("accept-encoding", "identity")
         if (password) headers.set("authorization", `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}`)
-        return await fetch(new Request(new URL(url.pathname + url.search, serverOrigin), request), { headers, redirect: "error" })
+        const response = await fetch(new Request(new URL(url.pathname + url.search, serverOrigin), request), { headers, redirect: "error" })
+        const outgoing = new Headers(response.headers)
+        // Fetch decodes compressed bodies before the proxy streams them to the TUI.
+        outgoing.delete("content-encoding"); outgoing.delete("content-length")
+        return new Response(response.body, { status: response.status, statusText: response.statusText, headers: outgoing })
       } catch (error) { return Response.json({ message: error instanceof Error ? error.message : String(error) }, { status: 400 }) }
     },
   })
